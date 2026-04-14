@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: llmstudy
+  ai:
+    dashscope:
+      api-key: 2cae583e197c41aa860c0bce2ff6e97c.RXWWVx0LdxNhlDGv
+
+server:
+  port: 28688
+
