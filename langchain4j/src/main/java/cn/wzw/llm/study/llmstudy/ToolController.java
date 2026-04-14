@@ -12,8 +12,10 @@ import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.request.ToolChoice;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.DefaultToolExecutor;
 import dev.langchain4j.service.tool.ToolExecutor;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -69,6 +71,25 @@ public class ToolController {
         //9. 再次调用模型，返回结果
         ChatResponse finalChatResponse = chatModel.chat(finalRequest);
         return finalChatResponse.aiMessage().text();
+    }
+
+
+    /**
+     * 高级别api
+     * @param response
+     * @param msg
+     * @return
+     */
+    @RequestMapping("/toolCalling")
+    public String toolCalling(HttpServletResponse response, String msg) {
+        response.setCharacterEncoding("UTF-8");
+
+        LangChainAiService langChainAiService1 = AiServices.builder(LangChainAiService.class)
+                .tools(new TemperatureTools())
+                .chatModel(chatModel)
+                .build();
+
+        return langChainAiService1.chat("2025年11月11日，杭州的气温怎样？");
     }
 
 }
