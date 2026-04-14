@@ -1,10 +1,23 @@
 spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/llmstudy?useSSL=false&serverTimezone=UTC&characterEncoding=utf8
+    username: root
+    password: tt
+    driver-class-name: com.mysql.cj.jdbc.Driver
   application:
     name: llmstudy
   ai:
-    dashscope:
+    chat:
+      memory:
+        repository:
+          jdbc:
+            platform: mysql
+            initialize-schema: always
+    zhipuai:
       api-key: 2cae583e197c41aa860c0bce2ff6e97c.RXWWVx0LdxNhlDGv
+      chat:
+        options:
+          model: glm-4-flash
 
 server:
   port: 28688
-
