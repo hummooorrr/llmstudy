@@ -1,0 +1,11 @@
+spring:
+  application:
+    name: rag
+  ai:
+    zhipuai:
+      api-key: 2cae583e197c41aa860c0bce2ff6e97c.RXWWVx0LdxNhlDGv
+      chat:
+        options:
+          model: glm-5.1
+server:
+  port: 28688
