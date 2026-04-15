@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: functioncall
+  ai:
+    zhipuai:
+      api-key: 2cae583e197c41aa860c0bce2ff6e97c.RXWWVx0LdxNhlDGv
+      chat:
+        options:
+          model: glm-4.5-Air
+
+server:
+  port: 28688
