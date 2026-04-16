@@ -24,8 +24,8 @@ public class HtmlReaderStrategy implements DocumentReaderStrategy {
     public List<Document> read(File file) throws IOException {
         // 读取配置
         JsoupDocumentReaderConfig config = JsoupDocumentReaderConfig.builder()
-                // 只提取p标签段落
-                .selector("p")
+                // 提取所有内容
+                .selector("body")
                 // 文件编码
                 .charset("UTF-8")
                 // 包含超链接

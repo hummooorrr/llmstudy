@@ -2,6 +2,7 @@ package cn.wzw.llm.study.llmstudy;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -36,7 +38,10 @@ public class RagController {
 
             List<Document> documents = selector.read(file);
 
-            return cleanDocuments(documents);
+            // 文档分片
+            documents = split(documents);
+
+            return documents;
 
         } catch (IOException e) {
             throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
@@ -83,5 +88,59 @@ public class RagController {
                     return new Document(text);
                 })
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 文档分片
+     */
+    public List<Document> split(List<Document> documents) {
+        if (CollectionUtils.isEmpty(documents)) {
+            return Collections.emptyList();
+        }
+
+        TokenTextSplitter splitter = new TokenTextSplitter(
+                // 每块最多 600 tokens
+                600,
+                // 每块至少 400 字符再考虑断点
+                300,
+                // 太短的不做嵌入
+                5,
+                // 最多拆分8000块
+                8000,
+                // 保留句号、换行符
+                true
+        );
+
+        return splitter.apply(documents);
+    }
+
+
+    @GetMapping("/readInit")
+    public List<Document> readInit(@RequestParam("path") String path) {
+        File file = new File(path);
+        if (!file.exists() || !file.isFile()) {
+            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
+        }
+        try {
+            // 1. 加载文档
+            List<Document> documents = selector.read(file);
+
+            // 2. 文本清洗
+            documents = cleanDocuments(documents);
+
+            // 3. 文档分片
+//            documents = split(documents);
+            OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(
+                    // 每块最大字符数
+                    400,
+                    // 块之间重叠 100 字符
+                    100
+            );
+            List<Document> apply = splitter.apply(documents);
+            return apply;
+
+        } catch (IOException e) {
+            throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
+        }
     }
 }
