@@ -25,11 +25,11 @@ public class MarkdownReaderStrategy implements DocumentReaderStrategy {
         // 读取配置
         MarkdownDocumentReaderConfig config = MarkdownDocumentReaderConfig.builder()
                 // 水平线分割生成新文档
-                .withHorizontalRuleCreateDocument(true)
+                .withHorizontalRuleCreateDocument(false)
                 // 不包含代码块
-                .withIncludeCodeBlock(false)
+                .withIncludeCodeBlock(true)
                 // 不包含引用
-                .withIncludeBlockquote(false)
+                .withIncludeBlockquote(true)
                 // 添加文件名元数据
                 .withAdditionalMetadata("filename", file.getName())
                 .build();

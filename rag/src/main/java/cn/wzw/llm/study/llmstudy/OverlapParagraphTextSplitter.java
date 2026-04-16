@@ -15,10 +15,10 @@ import java.util.List;
 public class OverlapParagraphTextSplitter extends TextSplitter {
 
     // 每块最大字符数
-    private final int chunkSize;
+    protected final int chunkSize;
 
     // 相邻块之间重叠字符数
-    private final int overlap;
+    protected final int overlap;
 
     public OverlapParagraphTextSplitter(int chunkSize, int overlap) {
         if (chunkSize <= 0) {

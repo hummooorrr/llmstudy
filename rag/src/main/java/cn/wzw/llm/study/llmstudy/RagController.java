@@ -2,7 +2,6 @@ package cn.wzw.llm.study.llmstudy;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -11,12 +10,22 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Collections;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.nio.file.Files;
+import java.util.*;
 
+/**
+ * RAG文档处理接口
+ * 提供多种文档读取和分片策略，按场景选择不同的管道
+ *
+ * 数据流: 文件 → Reader(读取) → 清洗 → Splitter(分片) → 向量化入库
+ *
+ * 各接口适用场景:
+ * - /load                  : 通用场景，Reader已分片，直接入库
+ * - /overlapSplit          : 通用场景，按固定大小+重叠切分
+ * - /markdownHeaderSplit   : Markdown文档，按标题层级建立父子关系
+ * - /sentenceWindowSplit   : 短文本/FAQ，按句子切分并附加窗口上下文
+ * - /wordHeaderSplit       : Word文档，按标题样式建立父子关系
+ */
 @RestController
 @RequestMapping("/rag")
 public class RagController {
@@ -28,30 +37,11 @@ public class RagController {
         this.selector = selector;
     }
 
-    @GetMapping("/read")
-    public List<Document> readDocument(@RequestParam("path") String path) {
-        File file = new File(path);
-        if (!file.exists() || !file.isFile()) {
-            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
-        }
-        try {
-
-            List<Document> documents = selector.read(file);
-
-            // 文档分片
-            documents = split(documents);
-
-            return documents;
-
-        } catch (IOException e) {
-            throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
-        }
-    }
-
     /**
-     * 文本清洗
+     * 轻量清洗：去除多余空行和首尾空白，保留所有内容信息
+     * 不做去重、不删特殊符号、不压缩换行，避免丢失检索关键信息
      */
-    public List<Document> cleanDocuments(List<Document> documents) {
+    private List<Document> clean(List<Document> documents) {
         if (CollectionUtils.isEmpty(documents)) {
             return documents;
         }
@@ -61,84 +51,125 @@ public class RagController {
                     if (doc == null || doc.getText() == null) {
                         return doc;
                     }
-
-                    String text = doc.getText();
-
-                    // 1. 去掉多余空白字符（空格、制表符、换行等）
-                    text = text.replaceAll("\\s+", " ").trim();
-
-                    // 2. 去掉无意义的乱码或特殊符号
-                    text = text.replaceAll("[^\\p{L}\\p{N}\\p{P}\\p{Z}\\n]", "");
-
-                    // 3. 可选：统一大小写
-                    // text = text.toLowerCase();
-
-                    // 4. 按换行拆分段落，去除重复段落
-                    String[] paragraphs = text.split("\\n+");
-                    Set<String> seen = new LinkedHashSet<>();
-                    for (String para : paragraphs) {
-                        String trimmed = para.trim();
-                        if (!trimmed.isEmpty()) {
-                            seen.add(trimmed);
-                        }
-                    }
-
-                    text = String.join("\n", seen);
-
-                    return new Document(text);
+                    String text = doc.getText().replaceAll("\n{3,}", "\n\n").trim();
+                    return new Document(text, doc.getMetadata());
                 })
-                .collect(Collectors.toList());
+                .toList();
     }
 
     /**
-     * 文档分片
+     * 通用文档加载
+     * Reader内部已按文件类型做了一次分片，清洗后直接返回，不做二次切分
+     *
+     * @param path 文件绝对路径
      */
-    public List<Document> split(List<Document> documents) {
-        if (CollectionUtils.isEmpty(documents)) {
-            return Collections.emptyList();
-        }
-
-        TokenTextSplitter splitter = new TokenTextSplitter(
-                // 每块最多 600 tokens
-                600,
-                // 每块至少 400 字符再考虑断点
-                300,
-                // 太短的不做嵌入
-                5,
-                // 最多拆分8000块
-                8000,
-                // 保留句号、换行符
-                true
-        );
-
-        return splitter.apply(documents);
-    }
-
-
-    @GetMapping("/readInit")
-    public List<Document> readInit(@RequestParam("path") String path) {
+    @GetMapping("/load")
+    public List<Document> load(@RequestParam("path") String path) {
         File file = new File(path);
         if (!file.exists() || !file.isFile()) {
             throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
         }
         try {
-            // 1. 加载文档
-            List<Document> documents = selector.read(file);
+            return clean(selector.read(file));
+        } catch (IOException e) {
+            throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
+        }
+    }
 
-            // 2. 文本清洗
-            documents = cleanDocuments(documents);
+    /**
+     * 重叠段落分片
+     * Reader读取后清洗，再按固定大小+重叠字符切分，适合通用检索场景
+     *
+     * @param path 文件绝对路径
+     */
+    @GetMapping("/overlapSplit")
+    public List<Document> overlapSplit(@RequestParam("path") String path) {
+        File file = new File(path);
+        if (!file.exists() || !file.isFile()) {
+            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
+        }
+        try {
+            List<Document> documents = clean(selector.read(file));
+            OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(400, 100);
+            return splitter.apply(documents);
+        } catch (IOException e) {
+            throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
+        }
+    }
 
-            // 3. 文档分片
-//            documents = split(documents);
-            OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(
-                    // 每块最大字符数
-                    400,
-                    // 块之间重叠 100 字符
-                    100
-            );
-            List<Document> apply = splitter.apply(documents);
-            return apply;
+    /**
+     * Markdown按标题层级分片（父子模式）
+     * 直接读原始文本，避免MarkdownDocumentReader预处理导致标题层级丢失
+     * 父分片: 高级标题下的完整内容; 子分片: 低级标题下的具体段落
+     *
+     * @param path 文件绝对路径（.md文件）
+     */
+    @GetMapping("/markdownHeaderSplit")
+    public List<Document> markdownHeaderSplit(@RequestParam("path") String path) {
+        File file = new File(path);
+        if (!file.exists() || !file.isFile()) {
+            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
+        }
+        try {
+            String rawText = Files.readString(file.toPath());
+            Document rawDoc = new Document(rawText);
 
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("# ", "h1");
+            headers.put("## ", "h2");
+            headers.put("### ", "h3");
+
+            MarkdownHeaderTextSplitter splitter = new MarkdownHeaderTextSplitter(headers, false, false, true);
+            return splitter.apply(List.of(rawDoc));
+        } catch (IOException e) {
+            throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 句子窗口分片
+     * 按句子切分，每个句子附加前后N句作为窗口上下文
+     * 适合短文本、FAQ等无明显层级结构的文档
+     *
+     * @param path       文件绝对路径
+     * @param windowSize 窗口大小，每个句子前后各保留N句，默认2
+     */
+    @GetMapping("/sentenceWindowSplit")
+    public List<Document> sentenceWindowSplit(@RequestParam("path") String path,
+                                               @RequestParam(value = "windowSize", defaultValue = "2") int windowSize) {
+        File file = new File(path);
+        if (!file.exists() || !file.isFile()) {
+            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
+        }
+        try {
+            List<Document> documents = clean(selector.read(file));
+            SentenceWindowSplitter splitter = new SentenceWindowSplitter(windowSize);
+            return splitter.apply(documents);
+        } catch (IOException e) {
+            throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Word按标题样式分片（父子模式）
+     * 传原始文件流给WordHeaderTextSplitter，避免Tika预处理丢失标题样式（Heading1-6）
+     * 超过chunkSize的分块会自动做重叠二次切分
+     *
+     * @param path 文件绝对路径（.doc/.docx文件）
+     */
+    @GetMapping("/wordHeaderSplit")
+    public List<Document> wordHeaderSplit(@RequestParam("path") String path) {
+        File file = new File(path);
+        if (!file.exists() || !file.isFile()) {
+            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
+        }
+        try {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("wordInputStream", Files.readAllBytes(file.toPath()));
+            Document doc = new Document("", metadata);
+
+            WordHeaderTextSplitter splitter = new WordHeaderTextSplitter(null, false, false, true, 500, 100);
+            return splitter.apply(List.of(doc));
         } catch (IOException e) {
             throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
         }
