@@ -1,11 +1,33 @@
 spring:
   application:
     name: rag
+  datasource:
+    url: jdbc:postgresql://localhost:5433/rag_test
+    username: pgvector
+    password: pgvector
   ai:
     zhipuai:
       api-key: 2cae583e197c41aa860c0bce2ff6e97c.RXWWVx0LdxNhlDGv
+      embedding:
+        options:
+          model: embedding-3
+          dimensions: 2048
       chat:
         options:
-          model: glm-5.1
+          model: glm-4.5-Air
+    vectorstore:
+      pgvector:
+        # 向量索引类型
+        index-type: NONE
+        # 距离度量，余弦值
+        distance-type: COSINE_DISTANCE
+        # 向量维度
+        dimensions: 2048
+        # 批量处理大小
+        max-document-batch-size: 9
+        # 启动时是否自动创建表
+        initialize-schema: true
+        # 创建的表名
+        table-name: vector_st
 server:
   port: 28688

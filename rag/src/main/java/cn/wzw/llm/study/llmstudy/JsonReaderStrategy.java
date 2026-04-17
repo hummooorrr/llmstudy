@@ -13,6 +13,7 @@ import java.util.List;
 @Component
 public class JsonReaderStrategy implements DocumentReaderStrategy {
 
+    @Override
     public boolean supports(File file) {
         String name = file.getName().toLowerCase();
         return name.endsWith(".json");

@@ -1,17 +1,24 @@
 package cn.wzw.llm.study.llmstudy;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
+import org.springframework.ai.zhipuai.ZhiPuAiChatOptions;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * RAG文档处理接口
@@ -28,13 +35,45 @@ import java.util.*;
  */
 @RestController
 @RequestMapping("/rag")
-public class RagController {
+public class RagController  implements InitializingBean {
 
     private final DocumentReaderStrategySelector selector;
 
     @Autowired
+    private EmbeddingService embeddingService;
+
+    private ChatClient chatClient;
+
+    @Autowired
+    private ChatModel zhiPuAiChatModel;
+
+    @Autowired
+    private PgVectorStore vectorStore;
+
+    @Autowired
     public RagController(DocumentReaderStrategySelector selector) {
         this.selector = selector;
+    }
+
+    /**
+     * 构建来源文件元数据，用于绕过Reader直接构造Document的场景
+     */
+    private Map<String, Object> sourceMetadata(File file) {
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("filename", file.getName());
+        metadata.put("filePath", file.getAbsolutePath());
+        return metadata;
+    }
+
+    /**
+     * 校验文件路径，无效时抛出 IllegalArgumentException
+     */
+    private File resolveFile(String path) {
+        File file = new File(path);
+        if (!file.exists() || !file.isFile()) {
+            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
+        }
+        return file;
     }
 
     /**
@@ -65,12 +104,8 @@ public class RagController {
      */
     @GetMapping("/load")
     public List<Document> load(@RequestParam("path") String path) {
-        File file = new File(path);
-        if (!file.exists() || !file.isFile()) {
-            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
-        }
         try {
-            return clean(selector.read(file));
+            return clean(selector.read(resolveFile(path)));
         } catch (IOException e) {
             throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
         }
@@ -84,12 +119,8 @@ public class RagController {
      */
     @GetMapping("/overlapSplit")
     public List<Document> overlapSplit(@RequestParam("path") String path) {
-        File file = new File(path);
-        if (!file.exists() || !file.isFile()) {
-            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
-        }
         try {
-            List<Document> documents = clean(selector.read(file));
+            List<Document> documents = clean(selector.read(resolveFile(path)));
             OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(400, 100);
             return splitter.apply(documents);
         } catch (IOException e) {
@@ -106,13 +137,10 @@ public class RagController {
      */
     @GetMapping("/markdownHeaderSplit")
     public List<Document> markdownHeaderSplit(@RequestParam("path") String path) {
-        File file = new File(path);
-        if (!file.exists() || !file.isFile()) {
-            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
-        }
         try {
+            File file = resolveFile(path);
             String rawText = Files.readString(file.toPath());
-            Document rawDoc = new Document(rawText);
+            Document rawDoc = new Document(rawText, sourceMetadata(file));
 
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("# ", "h1");
@@ -137,12 +165,8 @@ public class RagController {
     @GetMapping("/sentenceWindowSplit")
     public List<Document> sentenceWindowSplit(@RequestParam("path") String path,
                                                @RequestParam(value = "windowSize", defaultValue = "2") int windowSize) {
-        File file = new File(path);
-        if (!file.exists() || !file.isFile()) {
-            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
-        }
         try {
-            List<Document> documents = clean(selector.read(file));
+            List<Document> documents = clean(selector.read(resolveFile(path)));
             SentenceWindowSplitter splitter = new SentenceWindowSplitter(windowSize);
             return splitter.apply(documents);
         } catch (IOException e) {
@@ -159,12 +183,9 @@ public class RagController {
      */
     @GetMapping("/wordHeaderSplit")
     public List<Document> wordHeaderSplit(@RequestParam("path") String path) {
-        File file = new File(path);
-        if (!file.exists() || !file.isFile()) {
-            throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
-        }
         try {
-            Map<String, Object> metadata = new HashMap<>();
+            File file = resolveFile(path);
+            Map<String, Object> metadata = sourceMetadata(file);
             metadata.put("wordInputStream", Files.readAllBytes(file.toPath()));
             Document doc = new Document("", metadata);
 
@@ -174,4 +195,87 @@ public class RagController {
             throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
         }
     }
+
+    /**
+     * 通用文档分片入库
+     * 根据文件扩展名自动选择分片策略，分片后直接写入向量库
+     *
+     * @param path 文件绝对路径
+     * @return 处理结果摘要
+     */
+    @PostMapping("embed")
+    public Map<String, Object> embed(@RequestParam("path") String path) {
+        File file = resolveFile(path);
+        String fileName = file.getName().toLowerCase();
+
+        try {
+            List<Document> chunks;
+
+            if (fileName.endsWith(".md")) {
+                String rawText = Files.readString(file.toPath());
+                Map<String, String> headers = new LinkedHashMap<>();
+                headers.put("# ", "h1");
+                headers.put("## ", "h2");
+                headers.put("### ", "h3");
+                MarkdownHeaderTextSplitter splitter = new MarkdownHeaderTextSplitter(headers, false, false, true);
+                chunks = splitter.apply(List.of(new Document(rawText, sourceMetadata(file))));
+            } else if (fileName.endsWith(".doc") || fileName.endsWith(".docx")) {
+                Map<String, Object> metadata = sourceMetadata(file);
+                metadata.put("wordInputStream", Files.readAllBytes(file.toPath()));
+                WordHeaderTextSplitter splitter = new WordHeaderTextSplitter(null, false, false, true, 500, 100);
+                chunks = splitter.apply(List.of(new Document("", metadata)));
+            } else {
+                // 其他格式：先Reader读取清洗，再做重叠分片
+                List<Document> documents = clean(selector.read(file));
+                OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(400, 100);
+                chunks = splitter.apply(documents);
+            }
+
+            embeddingService.embedAndStore(chunks);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("file", file.getName());
+            result.put("chunks", chunks.size());
+            result.put("status", "success");
+            return result;
+        } catch (IOException e) {
+            throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
+        }
+    }
+
+
+
+    @GetMapping("/retrieveAdvisor")
+    public String retrieveAdvisor(String query) {
+        return chatClient.prompt(query).call().content();
+    }
+
+    @Override
+    public void afterPropertiesSet() throws Exception {
+
+        // 自定义Prompt模板
+        PromptTemplate promptTemplate = new PromptTemplate("""
+                请基于以下提供的参考文档内容，回答用户的问题。
+                如果参考文档中没有相关信息，请直接说明"没有找到相关信息"，不要编造内容。
+                
+                参考文档内容:
+                {question_answer_context}
+                
+                用户问题: {query}
+                """);
+
+        QuestionAnswerAdvisor questionAnswerAdvisor = QuestionAnswerAdvisor.builder(vectorStore)
+                .searchRequest(SearchRequest.builder().similarityThreshold(0.5).topK(5).build())
+                .promptTemplate(promptTemplate).build();
+
+        this.chatClient = ChatClient.builder(zhiPuAiChatModel)
+                // 实现 Logger 的 Advisor
+                .defaultAdvisors(questionAnswerAdvisor)
+                // 设置 ChatClient 中 ChatModel 的 Options 参数
+                .defaultOptions(
+                        ZhiPuAiChatOptions.builder()
+                                .build()
+                ).build();
+    }
+
 }

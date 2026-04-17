@@ -1,5 +1,7 @@
 package cn.wzw.llm.study.llmstudy;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.transformer.splitter.TextSplitter;
 
@@ -14,6 +16,8 @@ import java.util.stream.Collectors;
  * @author Hollis, 增加对父子分段的支持
  */
 public class MarkdownHeaderTextSplitter extends TextSplitter {
+
+    private static final Logger log = LoggerFactory.getLogger(MarkdownHeaderTextSplitter.class);
 
     /** 需要分割的标题列表，按标题标记长度倒序排列 */
     private List<Map.Entry<String, String>> headersToSplitOn;
@@ -33,7 +37,7 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
      * @param headersToSplitOn 标题分割映射表，key为标题标记（如"#"、"##"），value为元数据中的键名
      * @param returnEachLine 是否按行返回结果，false时会聚合相同元数据的行
      * @param stripHeaders 是否在结果中移除标题行
-     * @param parentChildModel 是否启用父子分段模式，启用后会在元数据中添加parentChunkId
+     * @param parentChildModel 是否启用父子分段模式，启用后会在元数据中添加parentChunkId和childChunkIds
      */
     public MarkdownHeaderTextSplitter(Map<String, String> headersToSplitOn, boolean returnEachLine, boolean stripHeaders, boolean parentChildModel) {
         // 按标题标记长度倒序排列，确保优先匹配更长的标记（如"###"优先于"##"）
@@ -72,7 +76,6 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
      */
     @Override
     protected List<String> splitText(String text) {
-        // 简化版本，仅返回文本内容
         return splitWithMetadata(text, new HashMap<>()).stream()
                 .map(DocumentWithMetadata::getContent)
                 .collect(Collectors.toList());
@@ -90,11 +93,11 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
         List<Line> linesWithMetadata = new ArrayList<>();
         List<String> currentContent = new ArrayList<>();
         Map<String, Object> currentMetadata = new HashMap<>(baseMetadata);
-        List<Header> headerStack = new ArrayList<>();  // 标题栈，用于追踪当前的标题层级结构
+        List<Header> headerStack = new ArrayList<>();
         Map<String, Object> initialMetadata = new HashMap<>(baseMetadata);
 
-        boolean inCodeBlock = false;  // 是否在代码块中
-        String openingFence = "";     // 代码块的开始标记
+        boolean inCodeBlock = false;
+        String openingFence = "";
 
         for (String line : lines) {
             String strippedLine = line.trim();
@@ -125,39 +128,31 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
             interrupted:
             {
                 for (Map.Entry<String, String> header : headersToSplitOn) {
-                    String sep = header.getKey();    // 标题标记，如"#"、"##"
-                    String name = header.getValue(); // 元数据中的键名
+                    String sep = header.getKey();
+                    String name = header.getValue();
 
-                    // 判断是否为有效的标题行
                     if (strippedLine.startsWith(sep)) {
                         if (name != null) {
-                            // 计算当前标题级别（统计#的个数）
                             int currentHeaderLevel = (int) sep.chars().filter(ch -> ch == '#').count();
 
-                            // 维护标题栈：移除所有级别大于等于当前级别的标题
-                            // 这样可以正确处理标题层级关系，如从### 回退到 ##
                             while (!headerStack.isEmpty() && headerStack.get(headerStack.size() - 1).getLevel() >= currentHeaderLevel) {
                                 Header poppedHeader = headerStack.remove(headerStack.size() - 1);
                                 initialMetadata.remove(poppedHeader.getName());
                             }
 
-                            // 将当前标题加入栈，并更新元数据
                             Header headerType = new Header(currentHeaderLevel, name, strippedLine.substring(sep.length()).trim());
                             headerStack.add(headerType);
                             initialMetadata.put(name, headerType.getData());
                             initialMetadata.put("headerLevel", currentHeaderLevel);
-                            // 为每个分段生成唯一ID，用于后续建立父子关系
                             String currentChunkId = UUID.randomUUID().toString();
                             initialMetadata.put("chunkId", currentChunkId);
                         }
 
-                        // 遇到新标题时，保存之前累积的内容
                         if (!currentContent.isEmpty()) {
                             linesWithMetadata.add(new Line(String.join("\n", currentContent), currentMetadata));
                             currentContent.clear();
                         }
 
-                        // 根据stripHeaders配置决定是否保留标题行
                         if (!stripHeaders) {
                             currentContent.add(strippedLine);
                         }
@@ -170,28 +165,22 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
                 if (!strippedLine.isEmpty()) {
                     currentContent.add(strippedLine);
                 } else if (!currentContent.isEmpty()) {
-                    // 遇到空行时，保存当前累积的内容
                     linesWithMetadata.add(new Line(String.join("\n", currentContent), currentMetadata));
                     currentContent.clear();
                 }
             }
 
-            // 更新当前元数据为最新的标题信息
             currentMetadata = new HashMap<>(initialMetadata);
         }
 
-        // 处理最后累积的内容
         if (!currentContent.isEmpty()) {
             linesWithMetadata.add(new Line(String.join("\n", currentContent), currentMetadata));
         }
 
-        // 根据配置决定返回方式
         List<DocumentWithMetadata> segments;
         if (!returnEachLine) {
-            // 聚合模式：将相同元数据的行合并
             segments = aggregateLinesToChunks(linesWithMetadata);
         } else {
-            // 逐行模式：保持每行独立
             segments = linesWithMetadata.stream()
                     .map(line -> new DocumentWithMetadata(line.getContent(), line.getMetadata()))
                     .collect(Collectors.toList());
@@ -201,8 +190,31 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
     }
 
     /**
+     * 判断两个元数据是否属于同一标题层级上下文
+     * 只比较headersToSplitOn中定义的标题key和headerLevel，忽略chunkId等字段
+     */
+    private boolean hasSameHeadingContext(Map<String, Object> m1, Map<String, Object> m2) {
+        for (Map.Entry<String, String> header : headersToSplitOn) {
+            String metadataKey = header.getValue();
+            if (!Objects.equals(m1.get(metadataKey), m2.get(metadataKey))) {
+                return false;
+            }
+        }
+        return Objects.equals(m1.get("headerLevel"), m2.get("headerLevel"));
+    }
+
+    /**
+     * 判断一个分块是否仅包含标题行（无正文内容）
+     * 用于决定是否将该标题与后续内容合并
+     */
+    private boolean isHeadingOnlyChunk(Line chunk) {
+        String content = chunk.getContent();
+        return content.lines().allMatch(line -> line.trim().startsWith("#") || line.trim().isEmpty());
+    }
+
+    /**
      * 聚合行为分块
-     * 将具有相同元数据的行合并为一个分块，并处理父子关系
+     * 将具有相同标题层级上下文的行合并为一个分块，并处理父子关系
      *
      * @param lines 待聚合的行列表
      * @return 聚合后的文档片段列表
@@ -210,54 +222,29 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
     private List<DocumentWithMetadata> aggregateLinesToChunks(List<Line> lines) {
         List<Line> aggregatedChunks = new ArrayList<>();
         for (Line line : lines) {
-            // 情况1：元数据相同，直接合并到上一个分块
-            if (!aggregatedChunks.isEmpty() && aggregatedChunks.get(aggregatedChunks.size() - 1).getMetadata().equals(line.getMetadata())) {
-                Line last = aggregatedChunks.get(aggregatedChunks.size() - 1);
-                last.setContent(last.getContent() + "  \n" + line.getContent());
-            }
-            // 情况2：元数据不同但上一行以标题结尾且未剥离标题，则也合并
-            // 这样可以将标题和其下的第一段内容合并在一起
-            else if (!aggregatedChunks.isEmpty() && !aggregatedChunks.get(aggregatedChunks.size() - 1).getMetadata().equals(line.getMetadata())
-                    && aggregatedChunks.get(aggregatedChunks.size() - 1).getMetadata().size() < line.getMetadata().size()
-                    && aggregatedChunks.get(aggregatedChunks.size() - 1).getContent().split("\n")[aggregatedChunks.get(aggregatedChunks.size() - 1).getContent().split("\n").length - 1].startsWith("#") && !stripHeaders) {
+            Line last = aggregatedChunks.isEmpty() ? null : aggregatedChunks.get(aggregatedChunks.size() - 1);
 
-                Line last = aggregatedChunks.get(aggregatedChunks.size() - 1);
-                last.setContent(last.getContent() + "  \n" + line.getContent());
+            if (last == null) {
+                aggregatedChunks.add(line);
+                continue;
             }
-            // 情况3：创建新分块
-            else {
+
+            boolean sameContext = hasSameHeadingContext(last.getMetadata(), line.getMetadata());
+
+            if (sameContext) {
+                // 相同标题上下文，合并
+                last.setContent(last.getContent() + "  \n" + line.getContent());
+            } else if (!stripHeaders && isHeadingOnlyChunk(last)) {
+                // 上一个分块仅含标题行（无正文），将其与后续内容合并
+                last.setContent(last.getContent() + "  \n" + line.getContent());
+            } else {
                 aggregatedChunks.add(line);
             }
         }
 
-        // 处理父子分段关系
+        // 处理父子分段关系（双向）
         if (parentChildModel) {
-            try {
-                // 遍历所有分块，为非顶级标题建立父子关系
-                for (int i = 0; i < aggregatedChunks.size(); i++) {
-                    Map<String, Object> currentMetaData = aggregatedChunks.get(i).getMetadata();
-                    Integer headerLevel = (Integer) currentMetaData.get("headerLevel");
-                    // 顶级标题（level=1）或无标题的分块跳过
-                    if (headerLevel == null || headerLevel == 1) {
-                        continue;
-                    }
-
-                    // 向前查找第一个级别更低的标题作为父节点
-                    if (headerLevel > 1) {
-                        for (int j = i - 1; j >= 0; j--) {
-                            Map<String, Object> lastMetaData = aggregatedChunks.get(j).getMetadata();
-                            Integer lastHeaderLevel = (Integer) lastMetaData.get("headerLevel");
-                            if (lastHeaderLevel != null && lastHeaderLevel < headerLevel) {
-                                // 将父节点的chunkId设置为当前节点的parentChunkId
-                                currentMetaData.put("parentChunkId", lastMetaData.get("chunkId"));
-                                break;
-                            }
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                System.out.println("父子模式转换失败，" + e.getMessage());
-            }
+            buildParentChildRelations(aggregatedChunks);
         }
 
         return aggregatedChunks.stream()
@@ -266,12 +253,51 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
     }
 
     /**
+     * 建立双向父子关系
+     * 子chunk通过parentChunkId指向父chunk
+     * 父chunk通过childChunkIds持有所有直接子chunk的ID列表
+     */
+    private void buildParentChildRelations(List<Line> chunks) {
+        try {
+            for (int i = 0; i < chunks.size(); i++) {
+                Map<String, Object> currentMetaData = chunks.get(i).getMetadata();
+                Integer headerLevel = (Integer) currentMetaData.get("headerLevel");
+
+                if (headerLevel == null || headerLevel == 1) {
+                    continue;
+                }
+
+                if (headerLevel > 1) {
+                    for (int j = i - 1; j >= 0; j--) {
+                        Map<String, Object> parentMetaData = chunks.get(j).getMetadata();
+                        Integer parentHeaderLevel = (Integer) parentMetaData.get("headerLevel");
+                        if (parentHeaderLevel != null && parentHeaderLevel < headerLevel) {
+                            String parentChunkId = (String) parentMetaData.get("chunkId");
+                            String childChunkId = (String) currentMetaData.get("chunkId");
+
+                            // 子 → 父
+                            currentMetaData.put("parentChunkId", parentChunkId);
+
+                            // 父 → 子（双向）
+                            @SuppressWarnings("unchecked")
+                            List<String> childChunkIds = (List<String>) parentMetaData.computeIfAbsent(
+                                    "childChunkIds", k -> new ArrayList<>());
+                            childChunkIds.add(childChunkId);
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("父子模式转换失败: {}", e.getMessage());
+        }
+    }
+
+    /**
      * 内部类：表示带有元数据的文本行
      */
     public static class Line {
-        /** 文本内容 */
         private String content;
-        /** 元数据信息 */
         private Map<String, Object> metadata;
 
         public Line(String content, Map<String, Object> metadata) {
@@ -300,11 +326,8 @@ public class MarkdownHeaderTextSplitter extends TextSplitter {
      * 内部类：表示Markdown标题
      */
     public static class Header {
-        /** 标题级别（1-6） */
         private int level;
-        /** 元数据中的键名 */
         private String name;
-        /** 标题文本内容（不含#标记） */
         private String data;
 
         public Header(int level, String name, String data) {

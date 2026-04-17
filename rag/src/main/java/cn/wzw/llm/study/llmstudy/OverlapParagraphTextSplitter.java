@@ -7,6 +7,7 @@ import org.springframework.ai.transformer.splitter.TextSplitter;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 
 /**
@@ -100,7 +101,7 @@ public class OverlapParagraphTextSplitter extends TextSplitter {
         for (Document doc : documents) {
             List<String> chunks = splitText(doc.getText());
             for (String chunk : chunks) {
-                result.add(new Document(chunk));
+                result.add(new Document(chunk, new HashMap<>(doc.getMetadata())));
             }
         }
         return result;

@@ -44,12 +44,17 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
     private boolean parentChildModel;
 
     /**
+     * 用于聚合比较的标题相关元数据key前缀
+     */
+    private static final String HEADING_KEY_PREFIX = "heading";
+
+    /**
      * 构造函数（支持chunkSize和overlap）
      *
      * @param headingLevelsToSplitOn 标题级别列表，如Arrays.asList(1, 2, 3)表示分割标题1、2、3
      * @param returnEachParagraph    是否按段落返回结果，false时会聚合相同元数据的段落
      * @param stripHeadings          是否在结果中移除标题段落
-     * @param parentChildModel       是否启用父子分段模式，启用后会在元数据中添加parentChunkId
+     * @param parentChildModel       是否启用父子分段模式，启用后会在元数据中添加parentChunkId和childChunkIds
      * @param chunkSize              每块最大字符数，0表示不限制
      * @param overlap                相邻块之间重叠字符数，0表示不重叠
      */
@@ -78,7 +83,6 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
         List<Document> result = new ArrayList<>();
         for (Document doc : documents) {
             try {
-                //doc/docx文件没办法直接把内容读取成string，必须要通过FileInputStream转成HWPFDocument才行。
                 Object wordInputStream = doc.getMetadata().get("wordInputStream");
                 if (wordInputStream instanceof InputStream) {
                     try {
@@ -153,143 +157,143 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
 
     /**
      * 处理新格式Word文档 (.docx)
+     * 使用try-with-resources确保XWPFDocument正确关闭
      */
     private List<DocumentWithMetadata> splitDocxDocument(InputStream inputStream, Map<String, Object> baseMetadata) throws Exception {
-        XWPFDocument document = new XWPFDocument(inputStream);
         List<ParagraphWithMetadata> paragraphsWithMetadata = new ArrayList<>();
-        List<String> currentContent = new ArrayList<>();
-        Map<String, Object> currentMetadata = new HashMap<>(baseMetadata);
-        List<HeadingInfo> headingStack = new ArrayList<>();  // 标题栈，用于追踪当前的标题层级结构
-        Map<String, Object> initialMetadata = new HashMap<>(baseMetadata);
+        try (XWPFDocument document = new XWPFDocument(inputStream)) {
+            List<String> currentContent = new ArrayList<>();
+            Map<String, Object> currentMetadata = new HashMap<>(baseMetadata);
+            List<HeadingInfo> headingStack = new ArrayList<>();
+            Map<String, Object> initialMetadata = new HashMap<>(baseMetadata);
 
-        // 遍历所有段落
-        for (XWPFParagraph paragraph : document.getParagraphs()) {
-            String text = paragraph.getText().trim();
-            if (text.isEmpty()) {
-                continue;
-            }
-
-            // 获取段落样式
-            String style = paragraph.getStyle();
-            Integer headingLevel = extractHeadingLevelFromDocx(style, paragraph);
-
-            // 检测并处理标题段落
-            if (headingLevel != null && headingLevelsToSplitOn.contains(headingLevel)) {
-                // 维护标题栈：移除所有级别大于等于当前级别的标题
-                while (!headingStack.isEmpty() && headingStack.get(headingStack.size() - 1).getLevel() >= headingLevel) {
-                    HeadingInfo poppedHeading = headingStack.remove(headingStack.size() - 1);
-                    initialMetadata.remove(poppedHeading.getMetadataKey());
+            // 遍历所有段落
+            for (XWPFParagraph paragraph : document.getParagraphs()) {
+                String text = paragraph.getText().trim();
+                if (text.isEmpty()) {
+                    continue;
                 }
 
-                // 将当前标题加入栈，并更新元数据
-                String metadataKey = "heading" + headingLevel;
-                HeadingInfo headingInfo = new HeadingInfo(headingLevel, metadataKey, text);
-                headingStack.add(headingInfo);
-                initialMetadata.put(metadataKey, text);
-                initialMetadata.put("headingLevel", headingLevel);
-                // 为每个分段生成唯一ID，用于后续建立父子关系
-                String currentChunkId = UUID.randomUUID().toString();
-                initialMetadata.put("chunkId", currentChunkId);
+                // 获取段落样式
+                String style = paragraph.getStyle();
+                Integer headingLevel = extractHeadingLevelFromDocx(style, paragraph);
 
-                // 遇到新标题时，保存之前累积的内容
-                if (!currentContent.isEmpty()) {
-                    paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
-                    currentContent.clear();
-                }
+                // 检测并处理标题段落
+                if (headingLevel != null && headingLevelsToSplitOn.contains(headingLevel)) {
+                    // 维护标题栈：移除所有级别大于等于当前级别的标题
+                    while (!headingStack.isEmpty() && headingStack.get(headingStack.size() - 1).getLevel() >= headingLevel) {
+                        HeadingInfo poppedHeading = headingStack.remove(headingStack.size() - 1);
+                        initialMetadata.remove(poppedHeading.getMetadataKey());
+                    }
 
-                // 根据stripHeadings配置决定是否保留标题段落
-                if (!stripHeadings) {
+                    // 将当前标题加入栈，并更新元数据
+                    String metadataKey = "heading" + headingLevel;
+                    HeadingInfo headingInfo = new HeadingInfo(headingLevel, metadataKey, text);
+                    headingStack.add(headingInfo);
+                    initialMetadata.put(metadataKey, text);
+                    initialMetadata.put("headingLevel", headingLevel);
+                    // 为每个分段生成唯一ID，用于后续建立父子关系
+                    String currentChunkId = UUID.randomUUID().toString();
+                    initialMetadata.put("chunkId", currentChunkId);
+
+                    // 遇到新标题时，保存之前累积的内容
+                    if (!currentContent.isEmpty()) {
+                        paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
+                        currentContent.clear();
+                    }
+
+                    // 根据stripHeadings配置决定是否保留标题段落
+                    if (!stripHeadings) {
+                        currentContent.add(text);
+                    }
+                } else {
+                    // 处理非标题段落
                     currentContent.add(text);
                 }
-            } else {
-                // 处理非标题段落
-                currentContent.add(text);
+
+                // 更新当前元数据为最新的标题信息
+                currentMetadata = new HashMap<>(initialMetadata);
             }
 
-            // 更新当前元数据为最新的标题信息
-            currentMetadata = new HashMap<>(initialMetadata);
+            // 处理最后累积的内容
+            if (!currentContent.isEmpty()) {
+                paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
+            }
         }
-
-        // 处理最后累积的内容
-        if (!currentContent.isEmpty()) {
-            paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
-        }
-
-        document.close();
-
-        // 根据配置决定返回方式
+        // XWPFDocument已自动关闭
         return processSegments(paragraphsWithMetadata);
     }
 
     /**
      * 处理旧格式Word文档 (.doc)
+     * 使用try-with-resources确保HWPFDocument正确关闭
      */
     private List<DocumentWithMetadata> splitDocDocument(InputStream inputStream, Map<String, Object> baseMetadata) throws Exception {
-        HWPFDocument document = new HWPFDocument(inputStream);
-        Range range = document.getRange();
-
         List<ParagraphWithMetadata> paragraphsWithMetadata = new ArrayList<>();
-        List<String> currentContent = new ArrayList<>();
-        Map<String, Object> currentMetadata = new HashMap<>(baseMetadata);
-        List<HeadingInfo> headingStack = new ArrayList<>();
-        Map<String, Object> initialMetadata = new HashMap<>(baseMetadata);
+        try (HWPFDocument document = new HWPFDocument(inputStream)) {
+            Range range = document.getRange();
+            List<String> currentContent = new ArrayList<>();
+            Map<String, Object> currentMetadata = new HashMap<>(baseMetadata);
+            List<HeadingInfo> headingStack = new ArrayList<>();
+            Map<String, Object> initialMetadata = new HashMap<>(baseMetadata);
 
-        // 遍历所有段落
-        for (int i = 0; i < range.numParagraphs(); i++) {
-            Paragraph paragraph = range.getParagraph(i);
-            String text = paragraph.text().trim();
+            // 遍历所有段落
+            for (int i = 0; i < range.numParagraphs(); i++) {
+                Paragraph paragraph = range.getParagraph(i);
+                String text = paragraph.text().trim();
 
-            if (text.isEmpty()) {
-                continue;
-            }
-
-            // 对于.doc文件，主要通过文本模式检测标题
-            Integer headingLevel = detectHeadingByTextPattern(text);
-
-            // 检测并处理标题段落
-            if (headingLevel != null && headingLevelsToSplitOn.contains(headingLevel)) {
-                // 维护标题栈
-                while (!headingStack.isEmpty() && headingStack.get(headingStack.size() - 1).getLevel() >= headingLevel) {
-                    HeadingInfo poppedHeading = headingStack.remove(headingStack.size() - 1);
-                    initialMetadata.remove(poppedHeading.getMetadataKey());
+                if (text.isEmpty()) {
+                    continue;
                 }
 
-                // 将当前标题加入栈，并更新元数据
-                String metadataKey = "heading" + headingLevel;
-                HeadingInfo headingInfo = new HeadingInfo(headingLevel, metadataKey, text);
-                headingStack.add(headingInfo);
-                initialMetadata.put(metadataKey, text);
-                initialMetadata.put("headingLevel", headingLevel);
-                String currentChunkId = UUID.randomUUID().toString();
-                initialMetadata.put("chunkId", currentChunkId);
-
-                // 遇到新标题时，保存之前累积的内容
-                if (!currentContent.isEmpty()) {
-                    paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
-                    currentContent.clear();
+                // 优先通过样式检测标题，再通过文本模式兜底
+                Integer headingLevel = extractHeadingLevelFromDoc(document, paragraph);
+                if (headingLevel == null) {
+                    headingLevel = detectHeadingByTextPattern(text);
                 }
 
-                // 根据stripHeadings配置决定是否保留标题段落
-                if (!stripHeadings) {
+                // 检测并处理标题段落
+                if (headingLevel != null && headingLevelsToSplitOn.contains(headingLevel)) {
+                    // 维护标题栈
+                    while (!headingStack.isEmpty() && headingStack.get(headingStack.size() - 1).getLevel() >= headingLevel) {
+                        HeadingInfo poppedHeading = headingStack.remove(headingStack.size() - 1);
+                        initialMetadata.remove(poppedHeading.getMetadataKey());
+                    }
+
+                    // 将当前标题加入栈，并更新元数据
+                    String metadataKey = "heading" + headingLevel;
+                    HeadingInfo headingInfo = new HeadingInfo(headingLevel, metadataKey, text);
+                    headingStack.add(headingInfo);
+                    initialMetadata.put(metadataKey, text);
+                    initialMetadata.put("headingLevel", headingLevel);
+                    String currentChunkId = UUID.randomUUID().toString();
+                    initialMetadata.put("chunkId", currentChunkId);
+
+                    // 遇到新标题时，保存之前累积的内容
+                    if (!currentContent.isEmpty()) {
+                        paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
+                        currentContent.clear();
+                    }
+
+                    // 根据stripHeadings配置决定是否保留标题段落
+                    if (!stripHeadings) {
+                        currentContent.add(text);
+                    }
+                } else {
+                    // 处理非标题段落
                     currentContent.add(text);
                 }
-            } else {
-                // 处理非标题段落
-                currentContent.add(text);
+
+                // 更新当前元数据
+                currentMetadata = new HashMap<>(initialMetadata);
             }
 
-            // 更新当前元数据
-            currentMetadata = new HashMap<>(initialMetadata);
+            // 处理最后累积的内容
+            if (!currentContent.isEmpty()) {
+                paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
+            }
         }
-
-        // 处理最后累积的内容
-        if (!currentContent.isEmpty()) {
-            paragraphsWithMetadata.add(new ParagraphWithMetadata(String.join("\n", currentContent), currentMetadata));
-        }
-
-        document.close();
-
-        // 根据配置决定返回方式
+        // HWPFDocument已自动关闭
         return processSegments(paragraphsWithMetadata);
     }
 
@@ -311,6 +315,23 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
     }
 
     /**
+     * 从.doc段落中提取标题级别（通过样式表）
+     * 如果样式表中没有标题样式信息，返回null由文本模式兜底
+     */
+    private Integer extractHeadingLevelFromDoc(HWPFDocument document, Paragraph paragraph) {
+        try {
+            String styleName = document.getStyleSheet().getStyleDescription(paragraph.getStyleIndex()).getName();
+            if (styleName != null && (styleName.matches("(?i)heading\\s*\\d") || styleName.matches("标题\\s*\\d"))) {
+                String levelStr = styleName.replaceAll("(?i)heading|标题|\\s", "");
+                return Integer.parseInt(levelStr);
+            }
+        } catch (Exception e) {
+            // 样式表解析失败，交给文本模式兜底
+        }
+        return null;
+    }
+
+    /**
      * 从段落中提取标题级别 (.docx格式)
      *
      * @param style     段落样式名称
@@ -319,7 +340,7 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
      */
     private Integer extractHeadingLevelFromDocx(String style, XWPFParagraph paragraph) {
         // 方法1: 标准Word标题样式：Heading1, Heading2, ..., Heading9
-        // 或中文版：标题 1, 标题 2, ...「
+        // 或中文版：标题 1, 标题 2, ...
         Integer headingLevel = null;
         if (style != null && (style.matches("(?i)heading\\s*\\d") || style.matches("标题\\s*\\d"))) {
             try {
@@ -346,7 +367,10 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
 
     /**
      * 通过文本模式检测标题级别
-     * 适用于没有应用Word标准样式的文档，这部分可以根据自己的文档的情况自己调整。
+     * 适用于没有应用Word标准样式的文档
+     * <p>
+     * 注意：此方法采用保守策略，只匹配结构性标题模式（第X章、一、等），
+     * 避免基于关键词的宽泛匹配导致正文段落被误判为标题
      *
      * @param text 段落文本内容
      * @return 标题级别，如果不是标题则返回null
@@ -393,26 +417,21 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
             return 4;
         }
 
-        // 检查是否全部是中文且较短（可能是章节标题）
-        if (text.length() <= 20 && text.matches("^[一-龥]+$")) {
-            // 常见的章节关键词
-            if (text.contains("总则") || text.contains("附则") || text.contains("说明") ||
-                    text.contains("须知") || text.contains("规定") || text.contains("制度") ||
-                    text.contains("办法") || text.contains("条例")) {
+        // 纯中文极短文本精确匹配法规章节关键词（要求完全等于关键词，避免包含匹配误判）
+        if (text.length() <= 10 && text.matches("^[一-龥]+$")) {
+            if (text.equals("总则") || text.equals("附则") || text.equals("说明") ||
+                    text.equals("须知") || text.equals("规定") || text.equals("制度") ||
+                    text.equals("办法") || text.equals("条例")) {
                 return 1;
             }
         }
 
-        // 检查是否包含标题关键词
-        if (text.length() <= 30) {
-            if (text.contains("管理") || text.contains("制度") || text.contains("规范") ||
-                    text.contains("流程") || text.contains("职责") || text.contains("权限") ||
-                    text.contains("考核") || text.contains("培训") || text.contains("招聘") ||
-                    text.contains("薪酬") || text.contains("福利") || text.contains("假期")) {
-                if (text.endsWith("制度") || text.endsWith("管理") ||
-                        text.endsWith("规定") || text.endsWith("办法")) {
-                    return 2;
-                }
+        // 短文本以特定复合词结尾，且不含句内标点（确保是独立标题行而非正文片段）
+        if (text.length() <= 15 && !text.matches(".*[，。；：、,;].*")) {
+            if (text.endsWith("管理制度") || text.endsWith("管理办法") ||
+                    text.endsWith("管理规定") || text.endsWith("管理规范") ||
+                    text.endsWith("暂行规定") || text.endsWith("实施细则")) {
+                return 2;
             }
         }
 
@@ -432,8 +451,22 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
     }
 
     /**
+     * 判断两个元数据是否属于同一标题层级上下文
+     * 只比较heading相关的key，忽略chunkId等会随段落变化的字段
+     */
+    private boolean hasSameHeadingContext(Map<String, Object> m1, Map<String, Object> m2) {
+        for (int level = 1; level <= 6; level++) {
+            String key = HEADING_KEY_PREFIX + level;
+            if (!Objects.equals(m1.get(key), m2.get(key))) {
+                return false;
+            }
+        }
+        return Objects.equals(m1.get("headingLevel"), m2.get("headingLevel"));
+    }
+
+    /**
      * 聚合段落为分块
-     * 将具有相同元数据的段落合并为一个分块，并处理父子关系
+     * 将具有相同标题层级上下文的段落合并为一个分块，并处理父子关系
      *
      * @param paragraphs 待聚合的段落列表
      * @return 聚合后的文档片段列表
@@ -442,9 +475,9 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
         List<ParagraphWithMetadata> aggregatedChunks = new ArrayList<>();
 
         for (ParagraphWithMetadata paragraph : paragraphs) {
-            // 元数据相同，直接合并到上一个分块
+            // 标题层级上下文相同，合并到上一个分块
             if (!aggregatedChunks.isEmpty() &&
-                    aggregatedChunks.get(aggregatedChunks.size() - 1).getMetadata().equals(paragraph.getMetadata())) {
+                    hasSameHeadingContext(aggregatedChunks.get(aggregatedChunks.size() - 1).getMetadata(), paragraph.getMetadata())) {
                 ParagraphWithMetadata last = aggregatedChunks.get(aggregatedChunks.size() - 1);
                 last.setContent(last.getContent() + "\n" + paragraph.getContent());
             } else {
@@ -458,40 +491,57 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
             aggregatedChunks = applySizeBasedSplitting(aggregatedChunks);
         }
 
-        // 处理父子分段关系
+        // 处理父子分段关系（双向）
         if (parentChildModel) {
-            try {
-                // 遍历所有分块，为非顶级标题建立父子关系
-                for (int i = 0; i < aggregatedChunks.size(); i++) {
-                    Map<String, Object> currentMetaData = aggregatedChunks.get(i).getMetadata();
-                    Integer headingLevel = (Integer) currentMetaData.get("headingLevel");
-
-                    // 顶级标题（level=1）或无标题的分块跳过
-                    if (headingLevel == null || headingLevel == 1) {
-                        continue;
-                    }
-
-                    // 向前查找第一个级别更低的标题作为父节点
-                    if (headingLevel > 1) {
-                        for (int j = i - 1; j >= 0; j--) {
-                            Map<String, Object> lastMetaData = aggregatedChunks.get(j).getMetadata();
-                            Integer lastHeadingLevel = (Integer) lastMetaData.get("headingLevel");
-                            if (lastHeadingLevel != null && lastHeadingLevel < headingLevel) {
-                                // 将父节点的chunkId设置为当前节点的parentChunkId
-                                currentMetaData.put("parentChunkId", lastMetaData.get("chunkId"));
-                                break;
-                            }
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                System.out.println("父子模式转换失败，" + e.getMessage());
-            }
+            buildParentChildRelations(aggregatedChunks);
         }
 
         return aggregatedChunks.stream()
                 .map(chunk -> new DocumentWithMetadata(chunk.getContent(), chunk.getMetadata()))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 建立双向父子关系
+     * 子chunk通过parentChunkId指向父chunk
+     * 父chunk通过childChunkIds持有所有直接子chunk的ID列表
+     */
+    private void buildParentChildRelations(List<ParagraphWithMetadata> chunks) {
+        try {
+            for (int i = 0; i < chunks.size(); i++) {
+                Map<String, Object> currentMetaData = chunks.get(i).getMetadata();
+                Integer headingLevel = (Integer) currentMetaData.get("headingLevel");
+
+                // 顶级标题（level=1）或无标题的分块跳过
+                if (headingLevel == null || headingLevel == 1) {
+                    continue;
+                }
+
+                // 向前查找第一个级别更低的标题作为父节点
+                if (headingLevel > 1) {
+                    for (int j = i - 1; j >= 0; j--) {
+                        Map<String, Object> parentMetaData = chunks.get(j).getMetadata();
+                        Integer parentHeadingLevel = (Integer) parentMetaData.get("headingLevel");
+                        if (parentHeadingLevel != null && parentHeadingLevel < headingLevel) {
+                            String parentChunkId = (String) parentMetaData.get("chunkId");
+                            String childChunkId = (String) currentMetaData.get("chunkId");
+
+                            // 子 → 父
+                            currentMetaData.put("parentChunkId", parentChunkId);
+
+                            // 父 → 子（双向）
+                            @SuppressWarnings("unchecked")
+                            List<String> childChunkIds = (List<String>) parentMetaData.computeIfAbsent(
+                                    "childChunkIds", k -> new ArrayList<>());
+                            childChunkIds.add(childChunkId);
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("父子模式转换失败，" + e.getMessage());
+        }
     }
 
     /**
@@ -617,4 +667,3 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
         }
     }
 }
-
