@@ -18,6 +18,7 @@
 		<module>langchain4j</module>
 		<module>functioncall</module>
 		<module>rag</module>
+		<module>pro-rag</module>
 	</modules>
 
 	<dependencyManagement>

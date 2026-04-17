@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static cn.wzw.llm.study.llmstudy.RerankUtil.rrfFusion;
+
 /**
  * RAG对话接口
  * 手动控制 检索 + 重写 + 生成 链路，不依赖 QuestionAnswerAdvisor
@@ -26,6 +28,12 @@ public class RagChatController {
 
     @Autowired
     private VectorStore vectorStore;
+
+    @Autowired
+    private EmbeddingService embeddingService;
+
+    @Autowired
+    private ElasticSearchService elasticSearchService;
 
     /**
      * 纯 ChatClient，不带 QuestionAnswerAdvisor，避免和手动检索冲突
@@ -77,5 +85,60 @@ public class RagChatController {
         Prompt prompt = promptTemplate.create(Map.of("documents", documentContent, "question", query));
 
         return chatClient.prompt(prompt).call().chatResponse().getResult().getOutput().getText();
+    }
+
+
+    @GetMapping("/hybridchat")
+    public String hybridchat(@RequestParam("query") String query) throws Exception {
+        // 1. 向量检索获取相似文档
+        List<Document> vectorDocs = embeddingService.similarSearch(query);
+
+
+        // 2. ES 关键词检索
+        List<EsDocumentChunk> keywordDocs = elasticSearchService.searchByKeyword(query, 5, true);
+
+
+        // 3. 根据 id 去重并合并文档
+        Map<String, String> idToContent = new LinkedHashMap<>();
+
+        // 向量检索文档
+        for (Document doc : vectorDocs) {
+            idToContent.putIfAbsent(doc.getId(), doc.getText());
+        }
+
+        // ES 关键词检索文档
+        for (EsDocumentChunk doc : keywordDocs) {
+            idToContent.putIfAbsent(doc.getId(), doc.getContent());
+        }
+
+        List<String> mergedContents = rrfFusion(vectorDocs, keywordDocs, 5);
+
+//        List<String> mergedContents = new ArrayList<>(idToContent.values());
+//        log.info("共检索到 {} 个相关文档块（向量 + 关键词融合）。", mergedContents.size());
+
+        // 4. 构建提示词模板
+        String promptTemplate = """
+            请基于以下提供的参考文档内容，回答用户的问题。
+            如果参考文档中没有相关信息，请直接说明"没有找到相关信息"，不要编造内容。
+            如果有了参考文档内容，请务必尽量回答问题。有可能用户的输入比较随意，你可以先尝试回答用户的问题，猜测他的实际需求，先给出回复，你需要尽量去贴合用户的问题需求。
+                            
+            参考文档:
+            {documents}
+                            
+            用户问题: {question}
+                           
+            """;
+
+        // 5. 拼接文档内容
+        String documentContent = String.join("\n\n=========文档分隔线===========\n\n", mergedContents);
+
+        // 6. 填充模板参数
+        PromptTemplate prompt = new PromptTemplate(promptTemplate);
+        Prompt realPrompt = prompt.create(Map.of("documents", documentContent, "question", query));
+
+        // 7. 调用大模型生成回答
+        String text = chatClient.prompt(realPrompt).call().chatResponse().getResult().getOutput().getText();
+
+        return text;
     }
 }
