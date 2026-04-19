@@ -34,6 +34,20 @@
         .btn-primary:hover { background: #2d2d4e; }
         .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
 
+        .file-list { margin-top: 12px; max-height: 200px; overflow-y: auto; }
+        .file-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; font-size: 13px; border-radius: 4px; margin-bottom: 4px; background: #f8f9fa; }
+        .file-item .file-name { color: #333; }
+        .file-item .file-size { color: #888; font-size: 12px; margin-left: 8px; }
+        .file-item .file-remove { color: #999; cursor: pointer; margin-left: 8px; font-size: 16px; }
+        .file-item .file-remove:hover { color: #c00; }
+        .file-item .file-status { font-size: 12px; margin-left: 8px; }
+        .file-item .file-status.success { color: #2e7d32; }
+        .file-item .file-status.fail { color: #c00; }
+        .file-item .file-status.pending { color: #888; }
+
+        .upload-progress { margin-top: 12px; font-size: 13px; color: #555; display: none; }
+        .upload-progress.show { display: block; }
+
         .result-box { background: #f8f9fa; border-radius: 6px; padding: 12px 16px; font-size: 13px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; display: none; }
         .result-box.show { display: block; }
         .result-box.error { background: #fff0f0; color: #c00; }
@@ -91,13 +105,16 @@
         <h3>上传文件到知识库</h3>
         <div class="upload-zone" id="uploadZone">
             <div style="font-size: 36px; color: #ccc;">+</div>
-            <p>点击或拖拽文件到此处（支持 PDF / Word / Markdown / TXT）</p>
-            <input type="file" id="fileInput" accept=".pdf,.doc,.docx,.md,.txt,.html,.json">
+            <p>点击或拖拽文件到此处（支持 PDF / Word / Markdown / TXT / 图片，可多选）</p>
+            <input type="file" id="fileInput" accept=".pdf,.doc,.docx,.md,.txt,.html,.json,.jpg,.jpeg,.png,.bmp,.tiff,.gif" multiple>
         </div>
+        <div class="file-list" id="fileList"></div>
         <div style="margin-top: 12px; display: flex; align-items: center; gap: 12px;">
             <button class="btn btn-primary" id="uploadBtn" disabled>上传入库</button>
+            <button class="btn" id="clearBtn" style="display:none;">清空列表</button>
             <span id="uploadStatus"></span>
         </div>
+        <div class="upload-progress" id="uploadProgress"></div>
         <div class="result-box" id="uploadResult"></div>
     </div>
 </div>
@@ -145,6 +162,12 @@
 const chatId = crypto.randomUUID();
 document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
 
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 // --- Tabs ---
 document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -161,6 +184,11 @@ const fileInput = document.getElementById('fileInput');
 const uploadBtn = document.getElementById('uploadBtn');
 const uploadStatus = document.getElementById('uploadStatus');
 const uploadResult = document.getElementById('uploadResult');
+const fileList = document.getElementById('fileList');
+const clearBtn = document.getElementById('clearBtn');
+const uploadProgress = document.getElementById('uploadProgress');
+
+let selectedFiles = [];
 
 uploadZone.addEventListener('click', () => fileInput.click());
 uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
@@ -168,49 +196,119 @@ uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag
 uploadZone.addEventListener('drop', e => {
     e.preventDefault();
     uploadZone.classList.remove('dragover');
-    if (e.dataTransfer.files.length) {
-        fileInput.files = e.dataTransfer.files;
-        onFileSelected();
-    }
+    addFiles(e.dataTransfer.files);
 });
-fileInput.addEventListener('change', onFileSelected);
+fileInput.addEventListener('change', () => {
+    addFiles(fileInput.files);
+    fileInput.value = '';
+});
 
-function onFileSelected() {
-    const file = fileInput.files[0];
-    if (file) {
-        uploadBtn.disabled = false;
-        uploadZone.innerHTML = '<div style="font-size:14px;color:#333;">已选择: <b>' + file.name + '</b> (' + (file.size / 1024).toFixed(1) + ' KB)</div><p>点击重新选择</p><input type="file" id="fileInput" accept=".pdf,.doc,.docx,.md,.txt,.html,.json">';
-        document.getElementById('fileInput').addEventListener('change', onFileSelected);
+function addFiles(fileListObj) {
+    for (const f of fileListObj) {
+        if (!selectedFiles.some(sf => sf.name === f.name && sf.size === f.size)) {
+            selectedFiles.push(f);
+        }
     }
+    renderFileList();
 }
 
+function renderFileList() {
+    fileList.innerHTML = '';
+    selectedFiles.forEach((f, idx) => {
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.id = 'file-item-' + idx;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'file-name';
+        nameSpan.textContent = f.name;
+        item.appendChild(nameSpan);
+
+        const sizeSpan = document.createElement('span');
+        sizeSpan.className = 'file-size';
+        sizeSpan.textContent = (f.size / 1024).toFixed(1) + ' KB';
+        item.appendChild(sizeSpan);
+
+        const statusSpan = document.createElement('span');
+        statusSpan.className = 'file-status pending';
+        statusSpan.id = 'file-status-' + idx;
+        statusSpan.textContent = '待上传';
+        item.appendChild(statusSpan);
+
+        const removeBtn = document.createElement('span');
+        removeBtn.className = 'file-remove';
+        removeBtn.textContent = '\u00d7';
+        removeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectedFiles.splice(idx, 1);
+            renderFileList();
+        });
+        item.appendChild(removeBtn);
+
+        fileList.appendChild(item);
+    });
+    uploadBtn.disabled = selectedFiles.length === 0;
+    clearBtn.style.display = selectedFiles.length > 0 ? '' : 'none';
+}
+
+clearBtn.addEventListener('click', () => {
+    selectedFiles = [];
+    renderFileList();
+    uploadResult.className = 'result-box';
+    uploadProgress.className = 'upload-progress';
+});
+
 uploadBtn.addEventListener('click', async () => {
-    const file = document.getElementById('fileInput').files[0];
-    if (!file) return;
+    if (selectedFiles.length === 0) return;
     uploadBtn.disabled = true;
-    uploadStatus.innerHTML = '<span class="spinner"></span> 上传中...';
+    clearBtn.style.display = 'none';
+    uploadProgress.className = 'upload-progress show';
     uploadResult.className = 'result-box';
 
-    const form = new FormData();
-    form.append('file', file);
-    try {
-        const res = await fetch('/pro-rag/upload', { method: 'POST', body: form });
-        const data = await res.json();
-        if (res.ok) {
-            uploadResult.className = 'result-box show';
-            uploadResult.textContent = JSON.stringify(data, null, 2);
-            uploadStatus.textContent = '上传成功';
-        } else {
-            uploadResult.className = 'result-box show error';
-            uploadResult.textContent = data.message || JSON.stringify(data);
-            uploadStatus.textContent = '上传失败';
+    let successCount = 0;
+    let failCount = 0;
+    const results = [];
+
+    for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const statusEl = document.getElementById('file-status-' + i);
+        statusEl.className = 'file-status';
+        statusEl.textContent = '';
+        statusEl.innerHTML = '<span class="spinner"></span>';
+        uploadProgress.textContent = '上传中 (' + (i + 1) + '/' + selectedFiles.length + ')...';
+
+        const form = new FormData();
+        form.append('file', file);
+        try {
+            const res = await fetch('/pro-rag/upload', { method: 'POST', body: form });
+            const data = await res.json();
+            if (res.ok) {
+                successCount++;
+                statusEl.className = 'file-status success';
+                statusEl.textContent = '成功 (' + data.chunks + ' 片段)';
+                results.push({ file: file.name, status: 'success', chunks: data.chunks });
+            } else {
+                failCount++;
+                statusEl.className = 'file-status fail';
+                statusEl.textContent = '失败: ' + (data.message || '未知错误');
+                results.push({ file: file.name, status: 'fail', message: data.message });
+            }
+        } catch (e) {
+            failCount++;
+            statusEl.className = 'file-status fail';
+            statusEl.textContent = '失败: ' + e.message;
+            results.push({ file: file.name, status: 'fail', message: e.message });
         }
-    } catch (e) {
-        uploadResult.className = 'result-box show error';
-        uploadResult.textContent = e.message;
-        uploadStatus.textContent = '上传失败';
     }
-    setTimeout(() => uploadStatus.textContent = '', 3000);
+
+    uploadProgress.textContent = '上传完成: 成功 ' + successCount + ' 个, 失败 ' + failCount + ' 个';
+    if (results.length > 0) {
+        uploadResult.className = 'result-box show';
+        uploadResult.textContent = JSON.stringify(results, null, 2);
+    }
+    selectedFiles = [];
+    renderFileList();
+    setTimeout(() => { uploadProgress.className = 'upload-progress'; }, 5000);
 });
 
 // --- Chat ---
@@ -242,6 +340,11 @@ async function sendChat() {
 
     try {
         const res = await fetch('/pro-rag/chat?message=' + encodeURIComponent(msg) + '&chatId=' + chatId);
+        if (!res.ok) {
+            const errData = await res.text();
+            bubble.textContent = 'Error: ' + errData;
+            return;
+        }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         bubble.textContent = '';
@@ -280,14 +383,32 @@ locateBtn.addEventListener('click', async () => {
         if (!data.length) {
             locateResults.innerHTML = '<div class="empty-state">未找到相关文档</div>';
         } else {
-            locateResults.innerHTML = data.map(item =>
-                '<div class="locate-item">' +
-                '<div class="filename">' + (item.filename || '') + '</div>' +
-                '<div class="filepath">' + (item.filePath || '') + '</div>' +
-                (item.matchedContent ? '<div class="snippet">' + item.matchedContent + '</div>' : '') +
-                (item.reason ? '<div style="font-size:12px;color:#888;margin-top:4px;">' + item.reason + '</div>' : '') +
-                '</div>'
-            ).join('');
+            locateResults.innerHTML = '';
+            data.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'locate-item';
+                const filename = document.createElement('div');
+                filename.className = 'filename';
+                filename.textContent = item.filename || '';
+                div.appendChild(filename);
+                const filepath = document.createElement('div');
+                filepath.className = 'filepath';
+                filepath.textContent = item.filePath || '';
+                div.appendChild(filepath);
+                if (item.matchedContent) {
+                    const snippet = document.createElement('div');
+                    snippet.className = 'snippet';
+                    snippet.textContent = item.matchedContent;
+                    div.appendChild(snippet);
+                }
+                if (item.reason) {
+                    const reason = document.createElement('div');
+                    reason.style.cssText = 'font-size:12px;color:#888;margin-top:4px;';
+                    reason.textContent = item.reason;
+                    div.appendChild(reason);
+                }
+                locateResults.appendChild(div);
+            });
         }
     } catch (e) {
         locateResults.innerHTML = '<div class="empty-state" style="color:#c00;">Error: ' + e.message + '</div>';
@@ -316,6 +437,11 @@ generateBtn.addEventListener('click', async () => {
         form.append('chatId', chatId);
         form.append('instruction', instruction);
         const res = await fetch('/pro-rag/generate', { method: 'POST', body: form });
+        if (!res.ok) {
+            const errData = await res.text();
+            generateOutput.textContent = 'Error: ' + errData;
+            return;
+        }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         generateOutput.textContent = '';

@@ -1,10 +1,13 @@
 package cn.wzw.llm.study.llmstudy;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -12,6 +15,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 public class EmbeddingService {
 
     /**
@@ -20,11 +24,22 @@ public class EmbeddingService {
      */
     private static final int BATCH_SIZE = 9;
 
+    private static final int MAX_RETRIES = 3;
+
+    @Value("${pro-rag.embedding.retry-interval-base:1000}")
+    private long retryIntervalBase;
+
+    @Value("${spring.ai.vectorstore.pgvector.table-name:vector_store}")
+    private String tableName;
+
     @Autowired
     private EmbeddingModel embeddingModel;
 
     @Autowired
     private VectorStore vectorStore;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     /**
      * 向量化
@@ -34,14 +49,54 @@ public class EmbeddingService {
     }
 
     /**
-     * 存储向量库（分批写入）
+     * 存储向量库（分批写入，带重试）
      */
     public void embedAndStore(List<Document> documents) {
+        int totalBatches = (documents.size() + BATCH_SIZE - 1) / BATCH_SIZE;
         for (int i = 0; i < documents.size(); i += BATCH_SIZE) {
-            // subList返回原List的视图，部分VectorStore实现不支持视图操作，包一层ArrayList确保安全
+            int batchIndex = i / BATCH_SIZE + 1;
             List<Document> batch = new ArrayList<>(documents.subList(i, Math.min(i + BATCH_SIZE, documents.size())));
-            vectorStore.add(batch);
+            for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                try {
+                    vectorStore.add(batch);
+                    break;
+                } catch (Exception e) {
+                    log.warn("嵌入第 {}/{} 批失败（尝试 {}/{}）: {}", batchIndex, totalBatches, attempt, MAX_RETRIES, e.getMessage());
+                    if (attempt == MAX_RETRIES) {
+                        throw new RuntimeException("嵌入失败，已重试" + MAX_RETRIES + "次", e);
+                    }
+                    try {
+                        Thread.sleep(retryIntervalBase * attempt);
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
         }
+    }
+
+    /**
+     * 按 filename 查询向量库中已有的旧数据 ID
+     */
+    public List<String> findIdsByFilename(String filename) {
+        if (!tableName.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
+            throw new IllegalArgumentException("非法表名: " + tableName);
+        }
+        return jdbcTemplate.queryForList(
+                "SELECT id FROM " + tableName + " WHERE metadata->>'filename' = ?",
+                String.class, filename
+        );
+    }
+
+    /**
+     * 按 ID 列表删除向量库数据
+     */
+    public void deleteByIds(List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        vectorStore.delete(ids);
+        log.info("向量库删除 {} 条数据", ids.size());
     }
 
     /**

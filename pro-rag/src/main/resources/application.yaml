@@ -16,7 +16,7 @@ spring:
           dimensions: 2048
       chat:
         options:
-          model: glm-4.5-Air
+          model: glm-4.7-flash
     vectorstore:
       pgvector:
         # 向量索引类型
@@ -34,7 +34,13 @@ spring:
 server:
   port: 28689
 
+spring.servlet.multipart:
+  max-file-size: 1024MB
+  max-request-size: 1024MB
+
 # 文件上传目录
 pro-rag:
   upload-dir: ./pro-rag-files
   generated-dir: ./pro-rag-generated
+  rerank:
+    enabled: true

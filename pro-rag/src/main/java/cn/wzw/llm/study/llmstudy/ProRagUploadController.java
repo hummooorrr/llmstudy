@@ -27,4 +27,15 @@ public class ProRagUploadController {
     public UploadedDocumentResult upload(@RequestParam("file") MultipartFile file) throws Exception {
         return proRagDocumentIngestionService.upload(file);
     }
+
+    /**
+     * 重新入库：对已落盘的文件重新执行分片、嵌入和 ES 写入
+     * 用于入库失败后的补录
+     *
+     * @param filename 上传目录中的文件名
+     */
+    @PostMapping("/reingest")
+    public UploadedDocumentResult reingest(@RequestParam("filename") String filename) throws Exception {
+        return proRagDocumentIngestionService.reingest(filename);
+    }
 }

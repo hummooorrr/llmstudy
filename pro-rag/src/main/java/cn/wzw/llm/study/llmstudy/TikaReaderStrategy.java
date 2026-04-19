@@ -1,6 +1,7 @@
 package cn.wzw.llm.study.llmstudy;
 
 import org.springframework.ai.document.Document;
+import org.apache.poi.openxml4j.util.ZipSecureFile;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -21,6 +22,7 @@ public class TikaReaderStrategy implements DocumentReaderStrategy {
 
     @Override
     public List<Document> read(File file) throws IOException {
+        ZipSecureFile.setMaxFileCount(10000);
         Resource resource = new FileSystemResource(file);
         return new TikaDocumentReader(resource).get();
     }

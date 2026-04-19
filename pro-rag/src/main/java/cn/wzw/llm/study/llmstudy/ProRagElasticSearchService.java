@@ -151,6 +151,37 @@ public class ProRagElasticSearchService {
     }
 
     /**
+     * 按 filename 查询 ES 中已有的旧数据 _id 列表
+     */
+    public List<String> findIdsByFilename(String filename) throws Exception {
+        SearchRequest request = SearchRequest.of(b -> b
+                .index(INDEX_NAME)
+                .query(q -> q.term(t -> t.field("metadata.filename").value(filename)))
+                .size(10000)
+                .source(src -> src.fetch(false))
+        );
+        SearchResponse<Void> response = client.search(request, Void.class);
+        return response.hits().hits().stream()
+                .map(hit -> hit.id())
+                .toList();
+    }
+
+    /**
+     * 按 _id 列表删除 ES 数据
+     */
+    public void deleteByIds(List<String> ids) throws Exception {
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        DeleteByQueryRequest request = DeleteByQueryRequest.of(b -> b
+                .index(INDEX_NAME)
+                .query(q -> q.ids(i -> i.values(ids)))
+        );
+        DeleteByQueryResponse response = client.deleteByQuery(request);
+        log.info("ES 删除 {} 条数据", response.deleted());
+    }
+
+    /**
      * 中文检索 - ik_max_word 建库 + ik_smart 检索
      */
     public List<EsDocumentChunk> searchByKeyword(String keyword) throws Exception {

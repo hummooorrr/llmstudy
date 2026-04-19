@@ -42,6 +42,9 @@ public class ProRagRetrievalService {
     @Autowired(required = false)
     private QuestionRewriteService questionRewriteService;
 
+    @Autowired
+    private ProRagRerankUtil proRagRerankUtil;
+
     public List<LocateResultItem> locateFiles(String query) throws Exception {
         List<String> queries = buildQueries(query);
         List<SearchHit> vectorHits = searchVectorHits(queries, null, 6, 0.45);
@@ -76,7 +79,7 @@ public class ProRagRetrievalService {
             mergeVectorDocs(vectorDocs, directiveDocs);
         }
 
-        List<String> contents = ProRagRerankUtil.rrfFusion(vectorDocs, keywordDocs, 8);
+        List<String> contents = proRagRerankUtil.hybridFusion(vectorDocs, keywordDocs, query, 8);
         List<ReferenceMaterial> referenceMaterials = buildReferenceMaterials(vectorDocs, keywordDocs, queries);
         return new GenerationReferenceBundle(contents, referenceMaterials);
     }
@@ -306,6 +309,10 @@ public class ProRagRetrievalService {
     }
 
     private String escapeFilterValue(String value) {
+        // filename 只允许字母、数字、中文、点、下划线、连字符和空格
+        if (!value.matches("^[\\w\\u4e00-\\u9fa5.\\-\\s ()（）]+$")) {
+            throw new IllegalArgumentException("不合法的文件名过滤值: " + value);
+        }
         return value.replace("\\", "\\\\").replace("'", "\\'");
     }
 

@@ -3,23 +3,60 @@ package cn.wzw.llm.study.llmstudy;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
+@Component
 public class ProRagRerankUtil {
+
+    @Value("${spring.ai.zhipuai.api-key}")
+    private String apiKey;
+
+    @Value("${pro-rag.rerank.enabled:true}")
+    private boolean rerankEnabled;
+
+    private final RestTemplate rerankRestTemplate;
+
+    public ProRagRerankUtil() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5000);
+        factory.setReadTimeout(10000);
+        this.rerankRestTemplate = new RestTemplate(factory);
+    }
+
+    /**
+     * 混合检索 + 融合：先 RRF 粗排，再 Rerank 精排
+     */
+    public List<String> hybridFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
+                                     String query, int topK) {
+        if (rerankEnabled) {
+            try {
+                List<String> result = rerankFusion(vectorDocs, keywordDocs, query, topK);
+                if (!result.isEmpty()) {
+                    return result;
+                }
+                log.warn("Rerank 返回空结果，回退到 RRF 融合");
+            } catch (Exception e) {
+                log.warn("Rerank 调用失败，回退到 RRF 融合: {}", e.getMessage());
+            }
+        }
+        return rrfFusion(vectorDocs, keywordDocs, topK);
+    }
 
     /**
      * RRF 算法融合向量检索和关键词检索结果
      */
-    public static List<String> rrfFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, int topK) {
+    public List<String> rrfFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, int topK) {
         final int K = 60;
         Map<String, Double> rrfScores = new HashMap<>();
         Map<String, String> idToChunkId = new HashMap<>();
@@ -73,48 +110,38 @@ public class ProRagRerankUtil {
     /**
      * RRF融合后按filePath聚合，返回文件级别的相关度排序
      */
-    public static List<Map<String, Object>> rrfFusionGroupByFilePath(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs) {
+    public List<Map<String, Object>> rrfFusionGroupByFilePath(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs) {
         final int K = 60;
-        // filePath -> 聚合得分
         Map<String, Double> filePathScores = new LinkedHashMap<>();
-        // filePath -> filename
         Map<String, String> filePathToFilename = new LinkedHashMap<>();
-        // filePath -> 匹配的chunk数
         Map<String, Integer> filePathChunkCount = new LinkedHashMap<>();
 
-        // 处理向量检索结果
         for (int i = 0; i < vectorDocs.size(); i++) {
             Document doc = vectorDocs.get(i);
             int rank = i + 1;
             double score = 1.0 / (K + rank);
-
             String filePath = doc.getMetadata().getOrDefault("filePath", "unknown").toString();
             String filename = doc.getMetadata().getOrDefault("filename", "unknown").toString();
-
             filePathScores.merge(filePath, score, Double::sum);
             filePathToFilename.putIfAbsent(filePath, filename);
             filePathChunkCount.merge(filePath, 1, Integer::sum);
         }
 
-        // 处理关键词检索结果
         for (int i = 0; i < keywordDocs.size(); i++) {
             EsDocumentChunk doc = keywordDocs.get(i);
             int rank = i + 1;
             double score = 1.0 / (K + rank);
-
             String filePath = doc.getMetadata() != null
                     ? doc.getMetadata().getOrDefault("filePath", "unknown").toString()
                     : "unknown";
             String filename = doc.getMetadata() != null
                     ? doc.getMetadata().getOrDefault("filename", "unknown").toString()
                     : "unknown";
-
             filePathScores.merge(filePath, score, Double::sum);
             filePathToFilename.putIfAbsent(filePath, filename);
             filePathChunkCount.merge(filePath, 1, Integer::sum);
         }
 
-        // 按聚合得分降序排列
         List<Map<String, Object>> result = filePathScores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .map(entry -> {
@@ -138,7 +165,8 @@ public class ProRagRerankUtil {
     /**
      * 使用智谱 rerank 重排序
      */
-    public static List<String> rerankFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, String query, int topK) throws Exception {
+    public List<String> rerankFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
+                                     String query, int topK) throws Exception {
         Map<String, String> idToContent = new LinkedHashMap<>();
         Map<String, String> idToChunkId = new HashMap<>();
 
@@ -164,7 +192,7 @@ public class ProRagRerankUtil {
 
         String url = "https://open.bigmodel.cn/api/paas/v4/rerank";
         HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + resolveZhipuApiKey());
+        headers.set("Authorization", "Bearer " + apiKey);
         headers.setContentType(MediaType.APPLICATION_JSON);
 
         Map<String, Object> requestBody = new HashMap<>();
@@ -175,13 +203,8 @@ public class ProRagRerankUtil {
         requestBody.put("return_documents", true);
 
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-        RestTemplate restTemplate = new RestTemplate();
-        restTemplate.setRequestFactory(new SimpleClientHttpRequestFactory() {{
-            setConnectTimeout(5000);
-            setReadTimeout(10000);
-        }});
 
-        ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+        ResponseEntity<Map> response = rerankRestTemplate.postForEntity(url, request, Map.class);
 
         if (!response.getStatusCode().is2xxSuccessful()) {
             throw new RuntimeException("重排序API调用失败: " + response.getStatusCode() + "，响应: " + response.getBody());
@@ -228,13 +251,5 @@ public class ProRagRerankUtil {
         log.info("重排序后返回{}条文档，原始合并{}条", result.size(), documents.size());
 
         return result;
-    }
-
-    private static String resolveZhipuApiKey() {
-        String apiKey = System.getenv("ZHIPU_API_KEY");
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException("未配置环境变量 ZHIPU_API_KEY，无法调用智谱 rerank");
-        }
-        return apiKey;
     }
 }

@@ -1,6 +1,7 @@
 package cn.wzw.llm.study.llmstudy;
 
 import cn.wzw.llm.study.llmstudy.dto.ingestion.UploadedDocumentResult;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,20 +10,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import javax.imageio.ImageIO;
+
 /**
  * 文件接收、分片和入库服务。
- * 把上传落盘、切分和双写存储集中到一个地方，便于复用到“上传即生成”等场景。
+ * 把上传落盘、切分和双写存储集中到一个地方，便于复用到"上传即生成"等场景。
  */
 @Service
+@Slf4j
 public class ProRagDocumentIngestionService {
 
     @Value("${pro-rag.upload-dir:./pro-rag-files}")
@@ -36,6 +43,9 @@ public class ProRagDocumentIngestionService {
 
     @Autowired
     private ProRagElasticSearchService proRagElasticSearchService;
+
+    @Autowired
+    private VisionModelService visionModelService;
 
     public UploadedDocumentResult upload(MultipartFile file) throws Exception {
         if (file == null || file.isEmpty()) {
@@ -54,8 +64,6 @@ public class ProRagDocumentIngestionService {
             throw new IllegalArgumentException("文件解析后没有可入库内容: " + originalFilename);
         }
 
-        embeddingService.embedAndStore(chunks);
-
         List<EsDocumentChunk> esDocs = chunks.stream().map(doc -> {
             EsDocumentChunk es = new EsDocumentChunk();
             es.setId(doc.getId());
@@ -63,7 +71,23 @@ public class ProRagDocumentIngestionService {
             es.setMetadata(doc.getMetadata());
             return es;
         }).toList();
-        proRagElasticSearchService.bulkIndex(esDocs);
+
+        // 先写向量库，再写 ES；任一步骤失败则记录需补录
+        boolean vectorStored = false;
+        boolean esStored = false;
+        try {
+            embeddingService.embedAndStore(chunks);
+            vectorStored = true;
+            proRagElasticSearchService.bulkIndex(esDocs);
+            esStored = true;
+        } catch (Exception e) {
+            log.error("文档入库失败: {}", e.getMessage(), e);
+            if (vectorStored && !esStored) {
+                log.error("向量库已写入但 ES 索引失败，需手动补录 {} 条 chunk，文件: {}",
+                        esDocs.size(), originalFilename);
+            }
+            throw e;
+        }
 
         return new UploadedDocumentResult(
                 originalFilename,
@@ -111,6 +135,14 @@ public class ProRagDocumentIngestionService {
 
     private List<Document> splitDocuments(File localFile) throws Exception {
         String fileName = localFile.getName().toLowerCase();
+
+        if (fileName.endsWith(".pdf")) {
+            List<Document> chunks = splitPdf(localFile);
+            if (CollectionUtils.isNotEmpty(chunks)) {
+                return chunks;
+            }
+        }
+
         if (fileName.endsWith(".md")) {
             String rawText = Files.readString(localFile.toPath());
             Map<String, String> headers = new LinkedHashMap<>();
@@ -139,6 +171,128 @@ public class ProRagDocumentIngestionService {
         metadata.put("filename", file.getName());
         metadata.put("filePath", file.getAbsolutePath());
         return metadata;
+    }
+
+    /**
+     * PDF 处理：先尝试文本提取，如果提取为空（扫描件）则用视觉模型逐页识别
+     */
+    private List<Document> splitPdf(File localFile) throws Exception {
+        List<Document> documents = clean(documentReaderStrategySelector.read(localFile));
+        if (CollectionUtils.isNotEmpty(documents)) {
+            OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(400, 100);
+            return splitter.apply(documents);
+        }
+        // 文本提取为空，按扫描件处理
+        log.info("PDF 文本提取为空，按扫描件处理: {}", localFile.getName());
+        return ocrPdfPages(localFile);
+    }
+
+    /**
+     * 将 PDF 每页渲染为图片，调用视觉模型识别文字
+     */
+    private List<Document> ocrPdfPages(File pdfFile) throws Exception {
+        org.apache.pdfbox.pdmodel.PDDocument pdDocument = org.apache.pdfbox.Loader.loadPDF(pdfFile);
+        try {
+            org.apache.pdfbox.rendering.PDFRenderer renderer = new org.apache.pdfbox.rendering.PDFRenderer(pdDocument);
+            int pageCount = pdDocument.getNumberOfPages();
+            java.util.List<Document> allDocs = new java.util.ArrayList<>();
+
+            for (int i = 0; i < pageCount; i++) {
+                log.info("扫描件识别中: {} 第 {}/{} 页", pdfFile.getName(), i + 1, pageCount);
+                BufferedImage image = renderer.renderImageWithDPI(i, 150);
+                java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                ImageIO.write(image, "png", baos);
+                byte[] imageBytes = baos.toByteArray();
+
+                String pageText = visionModelService.describeImage(
+                        imageBytes,
+                        org.springframework.util.MimeType.valueOf("image/png"),
+                        "请仔细识别并提取这张图片中的所有文字内容，保持原始格式和结构。这是PDF的第" + (i + 1) + "页（共" + pageCount + "页）。如果有表格，请用文本形式还原。"
+                );
+
+                if (StringUtils.hasText(pageText)) {
+                    Map<String, Object> metadata = sourceMetadata(pdfFile);
+                    metadata.put("pageNumber", i + 1);
+                    metadata.put("sourceType", "scanned-pdf");
+                    allDocs.add(new Document(pageText, metadata));
+                }
+            }
+
+            OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(400, 100);
+            return splitter.apply(allDocs);
+        } finally {
+            pdDocument.close();
+        }
+    }
+
+    /**
+     * 重新入库：对已落盘的文件重新执行分片、嵌入和 ES 写入。
+     * 用于入库失败后的补录，或更新已有文件的内容。
+     *
+     * @param filename 上传目录中的文件名
+     */
+    public UploadedDocumentResult reingest(String filename) throws Exception {
+        Path uploadPath = Paths.get(uploadDir).toAbsolutePath().normalize();
+        // 只取文件名部分，防止路径遍历
+        String safeName = Paths.get(filename).getFileName().toString();
+        Path filePath = uploadPath.resolve(safeName).normalize();
+        if (!filePath.startsWith(uploadPath)) {
+            throw new IllegalArgumentException("非法文件路径: " + filename);
+        }
+        if (!Files.exists(filePath)) {
+            throw new IllegalArgumentException("文件不存在: " + safeName);
+        }
+
+        // 1. 先记录旧数据 ID（在写入新数据之前查，确保查到的是旧的）
+        List<String> oldVectorIds = Collections.emptyList();
+        List<String> oldEsIds = Collections.emptyList();
+        try {
+            oldVectorIds = embeddingService.findIdsByFilename(safeName);
+        } catch (Exception e) {
+            log.warn("查询向量库旧数据失败: {}", e.getMessage());
+        }
+        try {
+            oldEsIds = proRagElasticSearchService.findIdsByFilename(safeName);
+        } catch (Exception e) {
+            log.warn("查询 ES 旧数据失败: {}", e.getMessage());
+        }
+
+        // 2. 分片并写入新数据（新 UUID，不会和旧数据冲突）
+        List<Document> chunks = splitDocuments(filePath.toFile());
+        if (CollectionUtils.isEmpty(chunks)) {
+            throw new IllegalArgumentException("文件解析后没有可入库内容: " + safeName);
+        }
+
+        List<EsDocumentChunk> esDocs = chunks.stream().map(doc -> {
+            EsDocumentChunk es = new EsDocumentChunk();
+            es.setId(doc.getId());
+            es.setContent(doc.getText());
+            es.setMetadata(doc.getMetadata());
+            return es;
+        }).toList();
+
+        embeddingService.embedAndStore(chunks);
+        proRagElasticSearchService.bulkIndex(esDocs);
+
+        // 3. 新数据写入成功后，按旧 ID 清理旧数据（不会误删新数据）
+        try {
+            embeddingService.deleteByIds(oldVectorIds);
+        } catch (Exception e) {
+            log.warn("清理向量库旧数据失败，可手动重试: {}", e.getMessage());
+        }
+        try {
+            proRagElasticSearchService.deleteByIds(oldEsIds);
+        } catch (Exception e) {
+            log.warn("清理 ES 旧数据失败，可手动重试: {}", e.getMessage());
+        }
+
+        return new UploadedDocumentResult(
+                safeName,
+                filePath.getFileName().toString(),
+                filePath.toAbsolutePath().toString(),
+                chunks.size(),
+                "reingested"
+        );
     }
 
     /**

@@ -3,9 +3,6 @@ package cn.wzw.llm.study.llmstudy;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.document.Document;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -14,7 +11,6 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 通用RAG问答接口（含对话记忆）
@@ -28,10 +24,7 @@ public class ProRagChatController {
     private ProRagConfiguration proRagConfiguration;
 
     @Autowired
-    private VectorStore vectorStore;
-
-    @Autowired
-    private ProRagElasticSearchService proRagElasticSearchService;
+    private ProRagRetrievalService proRagRetrievalService;
 
     private static final String CHAT_PROMPT =
             "你是银行风控领域的智能助手，专门帮助银行风控从业人员解答工作中遇到的问题。\n"
@@ -54,25 +47,14 @@ public class ProRagChatController {
     ) throws Exception {
         response.setCharacterEncoding("UTF-8");
 
-        // 1. 混合检索
-        List<Document> vectorDocs = vectorStore.similaritySearch(
-                SearchRequest.builder()
-                        .query(message)
-                        .topK(5)
-                        .similarityThreshold(0.5)
-                        .build()
-        );
+        // 1. 混合检索（问题重写 + 向量检索 + 关键词检索 + RRF 融合 + Rerank 精排）
+        List<String> mergedContents = proRagRetrievalService.retrieveReferenceBundle(message, null).contents();
 
-        List<EsDocumentChunk> keywordDocs = proRagElasticSearchService.searchByKeyword(message, 5, true);
-
-        // 2. RRF 融合
-        List<String> mergedContents = ProRagRerankUtil.rrfFusion(vectorDocs, keywordDocs, 5);
-
-        // 3. 构建 Prompt
+        // 2. 构建 Prompt
         String documentContent = String.join("\n\n=========文档分隔线===========\n\n", mergedContents);
         String userMessage = String.format(CHAT_PROMPT, documentContent, message);
 
-        // 4. 带对话记忆的流式回答
+        // 3. 带对话记忆的流式回答
         ChatClient chatChatClient = proRagConfiguration.getChatChatClient();
         return chatChatClient.prompt()
                 .user(userMessage)

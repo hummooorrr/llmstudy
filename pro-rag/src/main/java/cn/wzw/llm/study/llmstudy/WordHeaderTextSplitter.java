@@ -4,9 +4,12 @@ package cn.wzw.llm.study.llmstudy;
 import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.hwpf.usermodel.Paragraph;
 import org.apache.poi.hwpf.usermodel.Range;
+import org.apache.poi.openxml4j.util.ZipSecureFile;
 import org.apache.poi.poifs.filesystem.FileMagic;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 
 import java.io.BufferedInputStream;
@@ -22,6 +25,8 @@ import java.util.stream.Collectors;
  * @author Hollis
  */
 public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
+
+    private static final Logger log = LoggerFactory.getLogger(WordHeaderTextSplitter.class);
 
     /**
      * 需要分割的标题级别列表（1-9），对应Word的标题样式
@@ -160,6 +165,7 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
      * 使用try-with-resources确保XWPFDocument正确关闭
      */
     private List<DocumentWithMetadata> splitDocxDocument(InputStream inputStream, Map<String, Object> baseMetadata) throws Exception {
+        ZipSecureFile.setMaxFileCount(10000);
         List<ParagraphWithMetadata> paragraphsWithMetadata = new ArrayList<>();
         try (XWPFDocument document = new XWPFDocument(inputStream)) {
             List<String> currentContent = new ArrayList<>();
@@ -561,7 +567,7 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
                 }
             }
         } catch (Exception e) {
-            System.out.println("父子模式转换失败，" + e.getMessage());
+            log.warn("父子模式转换失败: {}", e.getMessage(), e);
         }
     }
 
