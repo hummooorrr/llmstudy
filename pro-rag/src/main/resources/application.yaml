@@ -9,7 +9,7 @@ spring:
     password: pgvector
   ai:
     zhipuai:
-      api-key: 73cf78e3f6a94f5e966ea66b2121394d.ZMr3QcCCvKxjdqAP
+      api-key: 1c365c4db27843afa4ad26b73c93e858.XSTK3rxbv1n54d1C
       embedding:
         options:
           model: embedding-3
