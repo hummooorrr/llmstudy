@@ -3,6 +3,7 @@ package cn.wzw.llm.study.llmstudy;
 import cn.wzw.llm.study.llmstudy.dto.locate.LocateHitSnippet;
 import cn.wzw.llm.study.llmstudy.dto.locate.LocateResultItem;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.GenerationReferenceBundle;
+import cn.wzw.llm.study.llmstudy.dto.retrieval.QueryBundle;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.ReferenceMaterial;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
@@ -46,9 +47,9 @@ public class ProRagRetrievalService {
     private ProRagRerankUtil proRagRerankUtil;
 
     public List<LocateResultItem> locateFiles(String query) throws Exception {
-        List<String> queries = buildQueries(query);
-        List<SearchHit> vectorHits = searchVectorHits(queries, null, 6, 0.45);
-        List<SearchHit> keywordHits = searchKeywordHits(queries, 6);
+        QueryBundle bundle = buildQueries(query);
+        List<SearchHit> vectorHits = searchVectorHits(bundle.vectorQueries(), null, 10, 0.35);
+        List<SearchHit> keywordHits = searchKeywordHits(bundle.keywordQueries(), 6);
 
         Map<String, FileLocateAccumulator> groupedFiles = new LinkedHashMap<>();
         vectorHits.forEach(hit -> groupedFiles
@@ -65,9 +66,9 @@ public class ProRagRetrievalService {
     }
 
     public GenerationReferenceBundle retrieveReferenceBundle(String query, String directiveFilename) throws Exception {
-        List<String> queries = buildQueries(query);
-        List<Document> vectorDocs = searchVector(queries, null, 5, 0.45);
-        List<EsDocumentChunk> keywordDocs = searchKeyword(queries, 5);
+        QueryBundle bundle = buildQueries(query);
+        List<Document> vectorDocs = searchVector(bundle.vectorQueries(), null, 10, 0.35);
+        List<EsDocumentChunk> keywordDocs = searchKeyword(bundle.keywordQueries(), 5);
 
         if (StringUtils.hasText(directiveFilename)) {
             List<Document> directiveDocs = searchVector(
@@ -79,12 +80,12 @@ public class ProRagRetrievalService {
             mergeVectorDocs(vectorDocs, directiveDocs);
         }
 
-        List<String> contents = proRagRerankUtil.hybridFusion(vectorDocs, keywordDocs, query, 8);
-        List<ReferenceMaterial> referenceMaterials = buildReferenceMaterials(vectorDocs, keywordDocs, queries);
+        List<String> contents = proRagRerankUtil.hybridFusion(vectorDocs, keywordDocs, bundle.originalQuery(), 8);
+        List<ReferenceMaterial> referenceMaterials = buildReferenceMaterials(vectorDocs, keywordDocs, bundle.originalQuery());
         return new GenerationReferenceBundle(contents, referenceMaterials);
     }
 
-    private List<ReferenceMaterial> buildReferenceMaterials(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, List<String> queries) {
+    private List<ReferenceMaterial> buildReferenceMaterials(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, String originalQuery) {
         Map<String, ReferenceMaterial> materials = new LinkedHashMap<>();
 
         vectorDocs.forEach(doc -> {
@@ -93,7 +94,7 @@ public class ProRagRetrievalService {
             materials.putIfAbsent(filePath, new ReferenceMaterial(
                     filePath,
                     filename,
-                    extractSnippet(doc.getText(), queries.isEmpty() ? null : queries.get(0))
+                    extractSnippet(doc.getText(), originalQuery)
             ));
         });
 
@@ -104,38 +105,52 @@ public class ProRagRetrievalService {
             materials.putIfAbsent(filePath, new ReferenceMaterial(
                     filePath,
                     filename,
-                    extractSnippet(doc.getContent(), queries.isEmpty() ? null : queries.get(0))
+                    extractSnippet(doc.getContent(), originalQuery)
             ));
         });
 
         return new ArrayList<>(materials.values()).stream().limit(6).toList();
     }
 
-    private List<String> buildQueries(String query) {
+    private QueryBundle buildQueries(String query) {
         if (!StringUtils.hasText(query)) {
             throw new IllegalArgumentException("query 不能为空");
         }
 
-        LinkedHashSet<String> queries = new LinkedHashSet<>();
         String normalizedQuery = query.trim();
-        queries.add(normalizedQuery);
 
-        if (questionRewriteService != null) {
-            try {
-                List<String> rewrites = questionRewriteService.rewriteQuery(normalizedQuery);
-                if (rewrites != null) {
-                    rewrites.stream()
-                            .filter(StringUtils::hasText)
-                            .map(String::trim)
-                            .limit(MAX_REWRITE_QUERIES)
-                            .forEach(queries::add);
-                }
-            } catch (Exception e) {
-                log.warn("问题重写失败，回退到原始查询: {}", normalizedQuery, e);
-            }
+        if (questionRewriteService == null) {
+            return new QueryBundle(normalizedQuery, List.of(normalizedQuery), List.of(normalizedQuery));
         }
 
-        return new ArrayList<>(queries);
+        try {
+            QuestionRewriteService.QueryRouteResult routeResult = questionRewriteService.routeQuery(normalizedQuery);
+
+            return switch (routeResult.strategy()) {
+                case DIRECT -> new QueryBundle(normalizedQuery, List.of(normalizedQuery), List.of(normalizedQuery));
+                case DECOMPOSE -> {
+                    LinkedHashSet<String> queries = new LinkedHashSet<>();
+                    queries.add(normalizedQuery);
+                    if (routeResult.subQueries() != null) {
+                        routeResult.subQueries().stream()
+                                .filter(StringUtils::hasText)
+                                .map(String::trim)
+                                .limit(MAX_REWRITE_QUERIES)
+                                .forEach(queries::add);
+                    }
+                    List<String> queryList = new ArrayList<>(queries);
+                    yield new QueryBundle(normalizedQuery, queryList, queryList);
+                }
+                case HYDE -> new QueryBundle(
+                        normalizedQuery,
+                        List.of(routeResult.hypotheticalAnswer()),
+                        List.of(normalizedQuery)
+                );
+            };
+        } catch (Exception e) {
+            log.warn("查询路由失败，回退到原始查询: {}", normalizedQuery, e);
+            return new QueryBundle(normalizedQuery, List.of(normalizedQuery), List.of(normalizedQuery));
+        }
     }
 
     private List<Document> searchVector(List<String> queries, String filename, int topK, double threshold) {

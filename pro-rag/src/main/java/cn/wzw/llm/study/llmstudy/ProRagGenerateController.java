@@ -45,35 +45,21 @@ public class ProRagGenerateController {
     @Autowired
     private ProRagTemplateOutputService proRagTemplateOutputService;
 
-    private static final String GENERATE_PROMPT =
-            "你是一名专业的银行风控合规文书撰写专家。你的任务是根据用户指令和参考资料，撰写或修改一份正式的银行风控合规文档。\n\n"
-                    + "## 撰写规则\n"
-                    + "1. 严格基于提供的参考资料内容进行撰写，不得编造不存在的政策、法规或数据\n"
-                    + "2. 文档语言应专业、严谨、规范，符合银行业监管文书的行文风格\n"
-                    + "3. 结构清晰，层次分明，使用规范的标题编号（一、二、三... 1. 2. 3. ...）\n"
-                    + "4. 如用户指令是对已有文档的修改意见，请在保留原文档框架基础上进行针对性调整\n"
-                    + "5. 如参考资料不足以支撑完整撰写，在相关段落注明\"待补充\"并说明需要哪些额外信息\n\n"
-                    + "## 参考资料\n"
-                    + "%s\n\n"
-                    + "## 用户指令\n"
-                    + "%s\n\n"
-                    + "请输出完整的文档内容：\n";
+    @Autowired
+    private DomainPromptConfig domainPromptConfig;
 
     /**
      * 生成/修改文档（流式输出）
-     *
-     * @param chatId            会话ID，同一ID保持对话记忆，支持多轮迭代修改
-     * @param instruction       生成/修改指令
-     * @param directiveFilename 可选，新下发的通知文件名，用于追加检索该文件内容
      */
     @PostMapping("/generate")
     public Flux<String> generate(
             @RequestParam("chatId") String chatId,
             @RequestParam("instruction") String instruction,
-            @RequestParam(value = "directiveFilename", required = false) String directiveFilename
+            @RequestParam(value = "directiveFilename", required = false) String directiveFilename,
+            @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) throws Exception {
         GenerationReferenceBundle referenceBundle = proRagRetrievalService.retrieveReferenceBundle(instruction, directiveFilename);
-        String userMessage = buildUserMessage(instruction, referenceBundle);
+        String userMessage = buildUserMessage(instruction, referenceBundle, domain);
         ChatClient generateChatClient = proRagConfiguration.getGenerateChatClient();
         return generateChatClient.prompt()
                 .user(userMessage)
@@ -83,7 +69,7 @@ public class ProRagGenerateController {
     }
 
     /**
-     * 同步生成并保存为文件，便于直接沉淀成可复用材料。
+     * 同步生成并保存为文件
      */
     @PostMapping("/generate-file")
     public GeneratedFileResult generateFile(
@@ -93,22 +79,18 @@ public class ProRagGenerateController {
             @RequestParam(value = "outputFilename", required = false) String outputFilename,
             @RequestParam(value = "outputFormat", defaultValue = "markdown") String outputFormat,
             @RequestParam(value = "templateName", required = false) String templateName,
-            @RequestParam(value = "documentTitle", required = false) String documentTitle
+            @RequestParam(value = "documentTitle", required = false) String documentTitle,
+            @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) throws Exception {
         return createGeneratedFile(
-                chatId,
-                instruction,
-                directiveFilename,
-                outputFilename,
-                outputFormat,
-                templateName,
-                documentTitle,
-                null
+                chatId, instruction, directiveFilename,
+                outputFilename, outputFormat, templateName, documentTitle,
+                null, domain
         );
     }
 
     /**
-     * 上传新通知文件后立即生成新材料，减少前后端编排复杂度。
+     * 上传新通知文件后立即生成新材料
      */
     @PostMapping(value = "/upload-and-generate", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public GeneratedFileResult uploadAndGenerate(
@@ -118,18 +100,14 @@ public class ProRagGenerateController {
             @RequestParam(value = "outputFilename", required = false) String outputFilename,
             @RequestParam(value = "outputFormat", defaultValue = "markdown") String outputFormat,
             @RequestParam(value = "templateName", required = false) String templateName,
-            @RequestParam(value = "documentTitle", required = false) String documentTitle
+            @RequestParam(value = "documentTitle", required = false) String documentTitle,
+            @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) throws Exception {
         UploadedDocumentResult uploadResult = proRagDocumentIngestionService.upload(file);
         return createGeneratedFile(
-                chatId,
-                instruction,
-                uploadResult.storedFilename(),
-                outputFilename,
-                outputFormat,
-                templateName,
-                documentTitle,
-                uploadResult
+                chatId, instruction, uploadResult.storedFilename(),
+                outputFilename, outputFormat, templateName, documentTitle,
+                uploadResult, domain
         );
     }
 
@@ -141,13 +119,14 @@ public class ProRagGenerateController {
             String outputFormat,
             String templateName,
             String documentTitle,
-            UploadedDocumentResult directiveFile
+            UploadedDocumentResult directiveFile,
+            String domain
     ) throws Exception {
         GenerationReferenceBundle referenceBundle = proRagRetrievalService.retrieveReferenceBundle(instruction, directiveFilename);
-        String generatedBody = generateContent(chatId, instruction, referenceBundle);
+        String generatedBody = generateContent(chatId, instruction, referenceBundle, domain);
         DocumentOutputFormat documentOutputFormat = DocumentOutputFormat.from(outputFormat);
         DocumentTemplateContext templateContext = buildTemplateContext(
-                resolveDocumentTitle(documentTitle, directiveFilename),
+                resolveDocumentTitle(documentTitle, directiveFilename, domain),
                 instruction,
                 directiveFilename,
                 generatedBody,
@@ -173,16 +152,16 @@ public class ProRagGenerateController {
         );
     }
 
-    private String generateContent(String chatId, String instruction, GenerationReferenceBundle referenceBundle) throws Exception {
+    private String generateContent(String chatId, String instruction, GenerationReferenceBundle referenceBundle, String domain) throws Exception {
         ChatClient generateChatClient = proRagConfiguration.getGenerateChatClient();
         return generateChatClient.prompt()
-                .user(buildUserMessage(instruction, referenceBundle))
+                .user(buildUserMessage(instruction, referenceBundle, domain))
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 .call()
                 .content();
     }
 
-    private String buildUserMessage(String instruction, GenerationReferenceBundle referenceBundle) {
+    private String buildUserMessage(String instruction, GenerationReferenceBundle referenceBundle, String domain) {
         if (!StringUtils.hasText(instruction)) {
             throw new IllegalArgumentException("instruction 不能为空");
         }
@@ -191,7 +170,8 @@ public class ProRagGenerateController {
         String documentContent = mergedContents.isEmpty()
                 ? "未检索到匹配材料，请根据已有要求输出基础框架，并把缺失信息标记为待补充。"
                 : String.join("\n\n=========文档分隔线===========\n\n", mergedContents);
-        return String.format(GENERATE_PROMPT, documentContent, instruction.trim());
+        String generatePrompt = domainPromptConfig.getDomain(domain).generatePrompt();
+        return String.format(generatePrompt, documentContent, instruction.trim());
     }
 
     private DocumentTemplateContext buildTemplateContext(
@@ -221,13 +201,14 @@ public class ProRagGenerateController {
                 .collect(Collectors.joining("\n"));
     }
 
-    private String resolveDocumentTitle(String documentTitle, String directiveFilename) {
+    private String resolveDocumentTitle(String documentTitle, String directiveFilename, String domain) {
         if (StringUtils.hasText(documentTitle)) {
             return documentTitle.trim();
         }
         if (StringUtils.hasText(directiveFilename)) {
             return directiveFilename.replaceAll("\\.[^.]+$", "") + "_生成稿";
         }
-        return "风控材料_" + LocalDateTime.now().format(FILE_TIME_FORMATTER);
+        String defaultName = domainPromptConfig.getDomain(domain).defaultFileName();
+        return defaultName + "_" + LocalDateTime.now().format(FILE_TIME_FORMATTER);
     }
 }

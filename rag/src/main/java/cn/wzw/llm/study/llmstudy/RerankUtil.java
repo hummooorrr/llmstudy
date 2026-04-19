@@ -117,7 +117,7 @@ public class RerankUtil {
         headers.setContentType(MediaType.APPLICATION_JSON);
 
         Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", "bge-reranker-v2-m3");
+        requestBody.put("model", "rerank");
         requestBody.put("query", query);
         requestBody.put("documents", documents);
         requestBody.put("top_n", topK);
@@ -137,7 +137,7 @@ public class RerankUtil {
         }
 
         Map<String, Object> responseBody = response.getBody();
-        if (responseBody == null || !responseBody.containsKey("data")) {
+        if (responseBody == null || !responseBody.containsKey("results")) {
             throw new RuntimeException("API响应格式异常，缺少data字段: " + responseBody);
         }
 

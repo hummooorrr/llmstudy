@@ -16,7 +16,7 @@ spring:
           dimensions: 2048
       chat:
         options:
-          model: glm-4.7-flash
+          model: glm-5.1
     vectorstore:
       pgvector:
         # 向量索引类型

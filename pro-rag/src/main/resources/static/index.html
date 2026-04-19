@@ -12,6 +12,11 @@
         .header h1 { font-size: 20px; font-weight: 600; }
         .header span { font-size: 13px; color: #aaa; }
 
+        .domain-tags { display: flex; gap: 6px; margin-left: auto; }
+        .domain-tag { padding: 4px 14px; border-radius: 14px; font-size: 12px; cursor: pointer; border: 1px solid rgba(255,255,255,.3); color: rgba(255,255,255,.7); transition: all .2s; }
+        .domain-tag:hover { border-color: rgba(255,255,255,.6); color: #fff; }
+        .domain-tag.active { background: rgba(255,255,255,.15); border-color: #fff; color: #fff; font-weight: 500; }
+
         .tabs { display: flex; background: #fff; border-bottom: 1px solid #e0e0e0; padding: 0 24px; }
         .tab { padding: 12px 20px; cursor: pointer; font-size: 14px; color: #666; border-bottom: 2px solid transparent; transition: all .2s; }
         .tab:hover { color: #333; }
@@ -90,6 +95,10 @@
 <div class="header">
     <h1>Pro-RAG</h1>
     <span>chatId: <span id="chatIdDisplay"></span></span>
+    <div class="domain-tags">
+        <div class="domain-tag active" data-domain="bank_risk">银行风控</div>
+        <div class="domain-tag" data-domain="history">历史</div>
+    </div>
 </div>
 
 <div class="tabs">
@@ -129,6 +138,7 @@
         <div class="chat-input-row">
             <input type="text" id="chatInput" placeholder="输入你的问题..." />
             <button class="btn btn-primary" id="chatSendBtn">发送</button>
+            <button class="btn" id="chatNewBtn" title="清空上下文，开始新对话">新对话</button>
         </div>
     </div>
 </div>
@@ -159,8 +169,18 @@
 </div>
 
 <script>
-const chatId = crypto.randomUUID();
+let chatId = crypto.randomUUID();
+let currentDomain = 'bank_risk';
 document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
+
+// --- Domain Tags ---
+document.querySelectorAll('.domain-tag').forEach(tag => {
+    tag.addEventListener('click', () => {
+        document.querySelectorAll('.domain-tag').forEach(t => t.classList.remove('active'));
+        tag.classList.add('active');
+        currentDomain = tag.dataset.domain;
+    });
+});
 
 function escapeHtml(str) {
     const div = document.createElement('div');
@@ -339,7 +359,7 @@ async function sendChat() {
     bubble.innerHTML = '<span class="spinner"></span>';
 
     try {
-        const res = await fetch('/pro-rag/chat?message=' + encodeURIComponent(msg) + '&chatId=' + chatId);
+        const res = await fetch('/pro-rag/chat?message=' + encodeURIComponent(msg) + '&chatId=' + chatId + '&domain=' + currentDomain);
         if (!res.ok) {
             const errData = await res.text();
             bubble.textContent = 'Error: ' + errData;
@@ -365,6 +385,13 @@ async function sendChat() {
 
 chatSendBtn.addEventListener('click', sendChat);
 chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+// --- New Chat ---
+document.getElementById('chatNewBtn').addEventListener('click', () => {
+    chatMessages.innerHTML = '<div class="empty-state" id="chatEmpty">输入问题开始对话</div>';
+    chatId = crypto.randomUUID();
+    document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
+});
 
 // --- Locate ---
 const locateInput = document.getElementById('locateInput');
@@ -436,6 +463,7 @@ generateBtn.addEventListener('click', async () => {
         const form = new FormData();
         form.append('chatId', chatId);
         form.append('instruction', instruction);
+        form.append('domain', currentDomain);
         const res = await fetch('/pro-rag/generate', { method: 'POST', body: form });
         if (!res.ok) {
             const errData = await res.text();

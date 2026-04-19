@@ -19,8 +19,8 @@ import java.util.stream.Collectors;
 @Component
 public class ProRagRerankUtil {
 
-    @Value("${spring.ai.zhipuai.api-key}")
-    private String apiKey;
+//    @Value("${spring.ai.zhipuai.api-key}")
+    private String apiKey = "1c365c4db27843afa4ad26b73c93e858.XSTK3rxbv1n54d1C";
 
     @Value("${pro-rag.rerank.enabled:true}")
     private boolean rerankEnabled;
@@ -196,7 +196,7 @@ public class ProRagRerankUtil {
         headers.setContentType(MediaType.APPLICATION_JSON);
 
         Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", "bge-reranker-v2-m3");
+        requestBody.put("model", "rerank");
         requestBody.put("query", query);
         requestBody.put("documents", documents);
         requestBody.put("top_n", topK);
@@ -211,11 +211,11 @@ public class ProRagRerankUtil {
         }
 
         Map<String, Object> responseBody = response.getBody();
-        if (responseBody == null || !responseBody.containsKey("data")) {
-            throw new RuntimeException("API响应格式异常，缺少data字段: " + responseBody);
+        if (responseBody == null || !responseBody.containsKey("results")) {
+            throw new RuntimeException("API响应格式异常，缺少results字段: " + responseBody);
         }
 
-        List<Map<String, Object>> rerankedResults = (List<Map<String, Object>>) responseBody.get("data");
+        List<Map<String, Object>> rerankedResults = (List<Map<String, Object>>) responseBody.get("results");
         if (rerankedResults == null || rerankedResults.isEmpty()) {
             log.warn("重排序返回空结果: {}", responseBody);
             return Collections.emptyList();

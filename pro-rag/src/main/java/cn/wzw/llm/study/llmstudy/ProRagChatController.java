@@ -26,33 +26,32 @@ public class ProRagChatController {
     @Autowired
     private ProRagRetrievalService proRagRetrievalService;
 
-    private static final String CHAT_PROMPT =
-            "你是银行风控领域的智能助手，专门帮助银行风控从业人员解答工作中遇到的问题。\n"
-                    + "请基于以下参考文档内容回答用户的问题。如果参考文档中没有相关信息，请直接说明\"没有找到相关信息\"，不要编造内容。\n\n"
-                    + "参考文档：\n"
-                    + "%s\n\n"
-                    + "用户问题：%s\n";
+    @Autowired
+    private DomainPromptConfig domainPromptConfig;
 
     /**
      * 通用RAG问答（流式输出）
      *
      * @param message 用户消息
      * @param chatId  会话ID，同一ID保持对话记忆
+     * @param domain  领域标签，默认 bank_risk
      */
     @GetMapping("/chat")
     public Flux<String> chat(
             @RequestParam("message") String message,
             @RequestParam("chatId") String chatId,
+            @RequestParam(value = "domain", defaultValue = "bank_risk") String domain,
             HttpServletResponse response
     ) throws Exception {
         response.setCharacterEncoding("UTF-8");
 
-        // 1. 混合检索（问题重写 + 向量检索 + 关键词检索 + RRF 融合 + Rerank 精排）
+        // 1. 混合检索（向量检索 + 关键词检索 + RRF 融合 + Rerank 精排）
         List<String> mergedContents = proRagRetrievalService.retrieveReferenceBundle(message, null).contents();
 
-        // 2. 构建 Prompt
+        // 2. 根据领域构建 Prompt
+        String chatPrompt = domainPromptConfig.getDomain(domain).chatPrompt();
         String documentContent = String.join("\n\n=========文档分隔线===========\n\n", mergedContents);
-        String userMessage = String.format(CHAT_PROMPT, documentContent, message);
+        String userMessage = String.format(chatPrompt, documentContent, message);
 
         // 3. 带对话记忆的流式回答
         ChatClient chatChatClient = proRagConfiguration.getChatChatClient();

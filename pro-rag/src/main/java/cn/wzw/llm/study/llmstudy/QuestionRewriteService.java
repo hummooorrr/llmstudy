@@ -1,6 +1,7 @@
 package cn.wzw.llm.study.llmstudy;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.PromptTemplate;
@@ -13,6 +14,10 @@ import java.util.List;
 @Service
 @Slf4j
 public class QuestionRewriteService {
+
+    public enum QueryStrategy { DIRECT, DECOMPOSE, HYDE }
+
+    public record QueryRouteResult(QueryStrategy strategy, List<String> subQueries, String hypotheticalAnswer) {}
 
     @Autowired
     private ChatModel chatModel;
@@ -80,6 +85,78 @@ public class QuestionRewriteService {
 
     private static final String QUESTION = "QUESTION";
     private static final String CHAT_HISTORY = "CHAT_HISTORY";
+
+    // 智能路由 prompt：单次 LLM 调用同时完成分类 + 生成
+    private static final String ROUTE_PROMPT =
+            "# 角色\n"
+                    + "你是一名查询策略分析专家。\n\n"
+                    + "# 任务\n"
+                    + "分析用户的查询，判断其类型并输出相应的处理结果。\n\n"
+                    + "## 策略类型\n"
+                    + "- DIRECT: 简单、明确的问题，无需拆分或改写\n"
+                    + "- DECOMPOSE: 复杂的、包含多个子问题的查询，需要拆分为独立的子查询\n"
+                    + "- HYDE: 概念性/描述性问题，用户的用词可能和文档用词不一致\n\n"
+                    + "## 判断标准\n"
+                    + "- 如果问题简短明确，只需要一个直接回答 → DIRECT\n"
+                    + "- 如果问题包含\"并且\"\"同时\"\"以及\"等连接词，明显包含多个独立子问题 → DECOMPOSE\n"
+                    + "- 如果问题是概念性的、描述性的，用户可能用非专业术语提问 → HYDE\n"
+                    + "- 默认策略为 DIRECT\n\n"
+                    + "# 用户查询\n"
+                    + "{QUESTION}\n\n"
+                    + "# 输出格式 (JSON)\n"
+                    + "对于 DIRECT:\n"
+                    + "\\{\"strategy\":\"DIRECT\",\"payload\":null\\}\n\n"
+                    + "对于 DECOMPOSE:\n"
+                    + "\\{\"strategy\":\"DECOMPOSE\",\"payload\":[\"子查询1\",\"子查询2\"]\\}\n\n"
+                    + "对于 HYDE:\n"
+                    + "\\{\"strategy\":\"HYDE\",\"payload\":\"这是一个假设性的专业回答，用于语义检索匹配...\"\\}\n\n"
+                    + "## HYDE payload 说明\n"
+                    + "当策略为 HYDE 时，payload 应该是你对该问题给出的一个假设性专业回答（约100-200字），\n"
+                    + "使用文档中可能出现的专业术语和表达方式，以便在语义层面匹配到相关文档。\n\n"
+                    + "# 输出\n"
+                    + "请只输出JSON，不要包含解释。";
+
+    /**
+     * 智能查询路由：单次 LLM 调用完成分类 + 生成
+     */
+    public QueryRouteResult routeQuery(String query) {
+        log.info("===========进入智能查询路由流程===========");
+        log.info("原始问题: {}", query);
+
+        PromptTemplate promptTemplate = new PromptTemplate(ROUTE_PROMPT);
+        promptTemplate.add(QUESTION, query);
+
+        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
+        log.info("===========路由原始结果: {} ===========", result);
+
+        String cleaned = result.trim();
+        if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replaceAll("^```\\w*\\n?", "").replaceAll("\\n?```$", "");
+        }
+
+        JSONObject json = JSON.parseObject(cleaned.trim());
+        String strategyStr = json.getString("strategy");
+
+        QueryStrategy strategy;
+        try {
+            strategy = QueryStrategy.valueOf(strategyStr);
+        } catch (Exception e) {
+            log.warn("无法识别策略: {}，回退为 DIRECT", strategyStr);
+            return new QueryRouteResult(QueryStrategy.DIRECT, List.of(query), null);
+        }
+
+        return switch (strategy) {
+            case DIRECT -> new QueryRouteResult(strategy, List.of(query), null);
+            case DECOMPOSE -> {
+                List<String> subQueries = json.getList("payload", String.class);
+                yield new QueryRouteResult(strategy, subQueries, null);
+            }
+            case HYDE -> {
+                String hydeAnswer = json.getString("payload");
+                yield new QueryRouteResult(strategy, null, hydeAnswer);
+            }
+        };
+    }
 
     /**
      * 问题分解
