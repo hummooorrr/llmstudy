@@ -1,6 +1,6 @@
 spring:
   application:
-    name: rag
+    name: pro-rag
   elasticsearch:
     uris: http://localhost:9200
   datasource:
@@ -9,7 +9,7 @@ spring:
     password: pgvector
   ai:
     zhipuai:
-      api-key: 2cae583e197c41aa860c0bce2ff6e97c.RXWWVx0LdxNhlDGv
+      api-key: 73cf78e3f6a94f5e966ea66b2121394d.ZMr3QcCCvKxjdqAP
       embedding:
         options:
           model: embedding-3
@@ -30,6 +30,11 @@ spring:
         # 启动时是否自动创建表
         initialize-schema: true
         # 创建的表名
-        table-name: vector_st
+        table-name: pro_vector_st
 server:
-  port: 28688
+  port: 28689
+
+# 文件上传目录
+pro-rag:
+  upload-dir: ./pro-rag-files
+  generated-dir: ./pro-rag-generated

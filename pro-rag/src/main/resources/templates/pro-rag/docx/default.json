@@ -1,0 +1,43 @@
+[
+  {
+    "type": "title",
+    "text": "${documentTitle}"
+  },
+  {
+    "type": "meta",
+    "label": "生成时间",
+    "placeholder": "generatedAt"
+  },
+  {
+    "type": "meta",
+    "label": "通知文件",
+    "placeholder": "directiveFilename"
+  },
+  {
+    "type": "blank"
+  },
+  {
+    "type": "heading1",
+    "text": "用户需求"
+  },
+  {
+    "type": "placeholder",
+    "placeholder": "instruction"
+  },
+  {
+    "type": "heading1",
+    "text": "参考材料"
+  },
+  {
+    "type": "placeholder",
+    "placeholder": "referenceFiles"
+  },
+  {
+    "type": "heading1",
+    "text": "正文"
+  },
+  {
+    "type": "placeholder",
+    "placeholder": "body"
+  }
+]

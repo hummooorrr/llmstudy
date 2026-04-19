@@ -14,54 +14,42 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
-public class RerankUtil {
+public class ProRagRerankUtil {
 
     /**
      * RRF 算法融合向量检索和关键词检索结果
-     * 公式：RRF Score = Σ(1/(k + rank_i))，其中 k 为常数（通常取60），rank_i 为文档在第i个检索结果中的排名
      */
     public static List<String> rrfFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, int topK) {
-        // 常数 k，控制低排名文档的权重
         final int K = 60;
-        // 存储每个文档ID的RRF得分
         Map<String, Double> rrfScores = new HashMap<>();
-        // 存储文档ID到chunkId的映射
         Map<String, String> idToChunkId = new HashMap<>();
 
-        // 处理向量检索结果（排名从1开始）
         for (int i = 0; i < vectorDocs.size(); i++) {
             Document doc = vectorDocs.get(i);
             String docId = doc.getId();
-            // 获取元数据中的chunkId
             String chunkId = doc.getMetadata().getOrDefault("chunkId", "unknown").toString();
             idToChunkId.put(docId, chunkId);
-            // 排名从1开始
             int rank = i + 1;
             double score = 1.0 / (K + rank);
             rrfScores.put(docId, rrfScores.getOrDefault(docId, 0.0) + score);
         }
 
-        // 处理关键词检索结果（排名从1开始）
         for (int i = 0; i < keywordDocs.size(); i++) {
             EsDocumentChunk doc = keywordDocs.get(i);
             String docId = doc.getId();
-            // 获取元数据中的chunkId
             String chunkId = doc.getMetadata().getOrDefault("chunkId", "unknown").toString();
             idToChunkId.put(docId, chunkId);
-            // 排名从1开始
             int rank = i + 1;
             double score = 1.0 / (K + rank);
             rrfScores.put(docId, rrfScores.getOrDefault(docId, 0.0) + score);
         }
 
-        // 收集所有文档ID并按RRF得分降序排序，同时限制返回topK条
         List<String> sortedDocIds = rrfScores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .map(Map.Entry::getKey)
                 .limit(topK)
                 .collect(Collectors.toList());
 
-        // 打印每个文本块的chunkId和分数
         String scoresLog = sortedDocIds.stream()
                 .map(docId -> {
                     String chunkId = idToChunkId.getOrDefault(docId, "unknown");
@@ -72,16 +60,79 @@ public class RerankUtil {
 
         log.info("RRF融合后top{}结果：{}", topK, scoresLog);
 
-        // 构建文档ID到内容的映射
         Map<String, String> idToContent = new HashMap<>();
         vectorDocs.forEach(doc -> idToContent.putIfAbsent(doc.getId(), doc.getText()));
         keywordDocs.forEach(doc -> idToContent.putIfAbsent(doc.getId(), doc.getContent()));
 
-        // 按排序后的ID提取文档内容
         return sortedDocIds.stream()
                 .map(idToContent::get)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * RRF融合后按filePath聚合，返回文件级别的相关度排序
+     */
+    public static List<Map<String, Object>> rrfFusionGroupByFilePath(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs) {
+        final int K = 60;
+        // filePath -> 聚合得分
+        Map<String, Double> filePathScores = new LinkedHashMap<>();
+        // filePath -> filename
+        Map<String, String> filePathToFilename = new LinkedHashMap<>();
+        // filePath -> 匹配的chunk数
+        Map<String, Integer> filePathChunkCount = new LinkedHashMap<>();
+
+        // 处理向量检索结果
+        for (int i = 0; i < vectorDocs.size(); i++) {
+            Document doc = vectorDocs.get(i);
+            int rank = i + 1;
+            double score = 1.0 / (K + rank);
+
+            String filePath = doc.getMetadata().getOrDefault("filePath", "unknown").toString();
+            String filename = doc.getMetadata().getOrDefault("filename", "unknown").toString();
+
+            filePathScores.merge(filePath, score, Double::sum);
+            filePathToFilename.putIfAbsent(filePath, filename);
+            filePathChunkCount.merge(filePath, 1, Integer::sum);
+        }
+
+        // 处理关键词检索结果
+        for (int i = 0; i < keywordDocs.size(); i++) {
+            EsDocumentChunk doc = keywordDocs.get(i);
+            int rank = i + 1;
+            double score = 1.0 / (K + rank);
+
+            String filePath = doc.getMetadata() != null
+                    ? doc.getMetadata().getOrDefault("filePath", "unknown").toString()
+                    : "unknown";
+            String filename = doc.getMetadata() != null
+                    ? doc.getMetadata().getOrDefault("filename", "unknown").toString()
+                    : "unknown";
+
+            filePathScores.merge(filePath, score, Double::sum);
+            filePathToFilename.putIfAbsent(filePath, filename);
+            filePathChunkCount.merge(filePath, 1, Integer::sum);
+        }
+
+        // 按聚合得分降序排列
+        List<Map<String, Object>> result = filePathScores.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .map(entry -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("filePath", entry.getKey());
+                    item.put("filename", filePathToFilename.getOrDefault(entry.getKey(), "unknown"));
+                    item.put("score", Math.round(entry.getValue() * 10000.0) / 10000.0);
+                    item.put("matchedChunks", filePathChunkCount.getOrDefault(entry.getKey(), 0));
+                    return item;
+                })
+                .collect(Collectors.toList());
+
+        log.info("文件定位结果：共{}个文件命中，按得分排序：{}",
+                result.size(),
+                result.stream().map(m -> m.get("filename") + "(" + m.get("score") + ")").collect(Collectors.joining(", "))
+        );
+
+        return result;
     }
 
     /**
@@ -113,7 +164,7 @@ public class RerankUtil {
 
         String url = "https://open.bigmodel.cn/api/paas/v4/rerank";
         HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer 73cf78e3f6a94f5e966ea66b2121394d.ZMr3QcCCvKxjdqAP");
+        headers.set("Authorization", "Bearer " + resolveZhipuApiKey());
         headers.setContentType(MediaType.APPLICATION_JSON);
 
         Map<String, Object> requestBody = new HashMap<>();
@@ -179,4 +230,11 @@ public class RerankUtil {
         return result;
     }
 
+    private static String resolveZhipuApiKey() {
+        String apiKey = System.getenv("ZHIPU_API_KEY");
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalStateException("未配置环境变量 ZHIPU_API_KEY，无法调用智谱 rerank");
+        }
+        return apiKey;
+    }
 }
