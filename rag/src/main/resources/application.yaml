@@ -2,21 +2,21 @@ spring:
   application:
     name: rag
   elasticsearch:
-    uris: http://localhost:9200
+    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
   datasource:
-    url: jdbc:postgresql://localhost:5433/rag_test
-    username: pgvector
-    password: pgvector
+    url: ${PG_URL:jdbc:postgresql://localhost:5433/rag_test}
+    username: ${PG_USERNAME:pgvector}
+    password: ${PG_PASSWORD:}
   ai:
     zhipuai:
-      api-key: {自己填充}
+      api-key: ${ZHIPU_API_KEY:}
       embedding:
         options:
-          model: embedding-3
-          dimensions: 2048
+          model: ${RAG_EMBEDDING_MODEL:embedding-3}
+          dimensions: ${RAG_EMBEDDING_DIMENSIONS:2048}
       chat:
         options:
-          model: glm-4.5-Air
+          model: ${RAG_CHAT_MODEL:glm-4.5-Air}
     vectorstore:
       pgvector:
         # 向量索引类型
@@ -32,4 +32,4 @@ spring:
         # 创建的表名
         table-name: vector_st
 server:
-  port: 28688
+  port: ${SERVER_PORT:28691}

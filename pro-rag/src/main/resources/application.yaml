@@ -2,21 +2,21 @@ spring:
   application:
     name: pro-rag
   elasticsearch:
-    uris: http://localhost:9200
+    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
   datasource:
-    url: jdbc:postgresql://localhost:5433/rag_test
-    username: pgvector
-    password: pgvector
+    url: ${PG_URL:jdbc:postgresql://localhost:5433/rag_test}
+    username: ${PG_USERNAME:pgvector}
+    password: ${PG_PASSWORD:}
   ai:
     zhipuai:
-      api-key: {自己填充}
+      api-key: ${ZHIPU_API_KEY:}
       embedding:
         options:
-          model: embedding-3
-          dimensions: 2048
+          model: ${PRO_RAG_EMBEDDING_MODEL:embedding-3}
+          dimensions: ${PRO_RAG_EMBEDDING_DIMENSIONS:2048}
       chat:
         options:
-          model: glm-5.1
+          model: ${PRO_RAG_CHAT_MODEL:glm-5.1}
     vectorstore:
       pgvector:
         # 向量索引类型
@@ -32,7 +32,7 @@ spring:
         # 创建的表名
         table-name: pro_vector_st
 server:
-  port: 28689
+  port: ${SERVER_PORT:28692}
 
 spring.servlet.multipart:
   max-file-size: 1024MB
@@ -40,7 +40,7 @@ spring.servlet.multipart:
 
 # 文件上传目录
 pro-rag:
-  upload-dir: ./pro-rag-files
-  generated-dir: ./pro-rag-generated
+  upload-dir: ${PRO_RAG_UPLOAD_DIR:./pro-rag-files}
+  generated-dir: ${PRO_RAG_GENERATED_DIR:./pro-rag-generated}
   rerank:
-    enabled: true
+    enabled: ${PRO_RAG_RERANK_ENABLED:true}
