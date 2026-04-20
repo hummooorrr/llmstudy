@@ -245,7 +245,7 @@ public class ProRagDocumentIngestionService {
             throw new IllegalArgumentException("非法文件路径: " + filename);
         }
         if (!Files.exists(filePath)) {
-            throw new IllegalArgumentException("文件不存在: " + safeName);
+            throw new IllegalArgumentException("文件不存在: " + safeName + "，可能已被 7 天保留策略自动清理，无法补录");
         }
 
         // 1. 先记录旧数据 ID（在写入新数据之前查，确保查到的是旧的）

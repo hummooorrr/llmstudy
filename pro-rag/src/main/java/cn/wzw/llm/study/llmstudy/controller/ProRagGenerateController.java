@@ -12,15 +12,27 @@ import cn.wzw.llm.study.llmstudy.output.ProRagTemplateOutputService;
 import cn.wzw.llm.study.llmstudy.output.RenderedTemplateOutput;
 import cn.wzw.llm.study.llmstudy.service.ProRagDocumentIngestionService;
 import cn.wzw.llm.study.llmstudy.service.ProRagRetrievalService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.UrlResource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -51,6 +63,9 @@ public class ProRagGenerateController {
 
     @Autowired
     private DomainPromptConfig domainPromptConfig;
+
+    @Value("${pro-rag.generated-dir:./pro-rag-generated}")
+    private String generatedDir;
 
     /**
      * 生成/修改文档（流式输出）
@@ -113,6 +128,33 @@ public class ProRagGenerateController {
                 outputFilename, outputFormat, templateName, documentTitle,
                 uploadResult, domain
         );
+    }
+
+    /**
+     * 下载生成的文档产物
+     */
+    @GetMapping("/generated-files/{filename:.+}")
+    public ResponseEntity<Resource> downloadGeneratedFile(@PathVariable("filename") String filename) throws Exception {
+        Path generatedDirectory = Paths.get(generatedDir).toAbsolutePath().normalize();
+        Path filePath = generatedDirectory.resolve(filename).normalize();
+        if (!filePath.startsWith(generatedDirectory)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "非法文件路径");
+        }
+        if (!Files.exists(filePath) || !Files.isRegularFile(filePath)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件不存在: " + filename + "，可能已被 7 天保留策略自动清理");
+        }
+
+        Resource resource = new UrlResource(filePath.toUri());
+        MediaType mediaType = resolveDownloadMediaType(filename);
+        String contentDisposition = ContentDisposition.attachment()
+                .filename(filePath.getFileName().toString(), StandardCharsets.UTF_8)
+                .build()
+                .toString();
+
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition)
+                .body(resource);
     }
 
     private GeneratedFileResult createGeneratedFile(
@@ -214,5 +256,15 @@ public class ProRagGenerateController {
         }
         String defaultName = domainPromptConfig.getDomain(domain).defaultFileName();
         return defaultName + "_" + LocalDateTime.now().format(FILE_TIME_FORMATTER);
+    }
+
+    private MediaType resolveDownloadMediaType(String filename) {
+        if (filename != null && filename.toLowerCase().endsWith(".md")) {
+            return MediaType.parseMediaType("text/markdown; charset=UTF-8");
+        }
+        if (filename != null && filename.toLowerCase().endsWith(".docx")) {
+            return MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        }
+        return MediaType.APPLICATION_OCTET_STREAM;
     }
 }
