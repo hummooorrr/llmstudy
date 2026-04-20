@@ -14,7 +14,7 @@ spring:
             platform: mysql
             initialize-schema: always
     zhipuai:
-      api-key: 73cf78e3f6a94f5e966ea66b2121394d.ZMr3QcCCvKxjdqAP
+      api-key: {自己填充}
       chat:
         options:
           model: glm-5.1

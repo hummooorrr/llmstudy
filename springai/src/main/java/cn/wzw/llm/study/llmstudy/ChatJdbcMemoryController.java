@@ -23,6 +23,9 @@ import reactor.core.publisher.Flux;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * JDBC 持久化对话记忆演示：将聊天记录存储到数据库
+ */
 @RestController
 @RequestMapping("/ai/jdbc/memory")
 public class ChatJdbcMemoryController implements InitializingBean {

@@ -7,6 +7,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
+/**
+ * ChatModel 底层 API 演示：同步调用与流式输出
+ */
 @RestController
 @RequestMapping("/model")
 public class ChatModelController {
