@@ -83,6 +83,33 @@
         .generate-input-row { display: flex; gap: 8px; margin-bottom: 12px; }
         .generate-input-row input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; outline: none; }
         .generate-input-row input:focus { border-color: #1a1a2e; }
+        .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 12px; }
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field label { font-size: 12px; color: #666; }
+        .field input, .field select { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; outline: none; background: #fff; }
+        .field input:focus, .field select:focus { border-color: #1a1a2e; }
+        .section-tip { font-size: 12px; color: #888; margin-bottom: 12px; line-height: 1.6; }
+        .file-picker { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+        .file-picker input[type="file"] { font-size: 13px; }
+        .file-picker .file-name { font-size: 13px; color: #555; }
+        .generated-result { margin-top: 12px; border: 1px solid #e0e0e0; border-radius: 8px; background: #fafafa; padding: 16px; display: none; }
+        .generated-result.show { display: block; }
+        .generated-result.error { background: #fff0f0; border-color: #f2c3c3; color: #c00; }
+        .generated-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
+        .generated-meta-item { background: #fff; border-radius: 6px; padding: 10px 12px; border: 1px solid #eee; }
+        .generated-meta-item .label { font-size: 12px; color: #888; margin-bottom: 4px; }
+        .generated-meta-item .value { font-size: 13px; color: #333; word-break: break-all; white-space: pre-wrap; }
+        .generated-section-title { font-size: 13px; font-weight: 600; color: #1a1a2e; margin: 14px 0 8px; }
+        .generated-preview { background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
+        .reference-list { display: flex; flex-direction: column; gap: 8px; }
+        .reference-item { background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 10px 12px; }
+        .reference-item .name { font-size: 13px; font-weight: 500; color: #333; }
+        .reference-item .path { font-size: 12px; color: #888; margin-top: 4px; word-break: break-all; }
+        .reference-item .excerpt { font-size: 12px; color: #555; margin-top: 6px; white-space: pre-wrap; }
+        .result-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+        .result-actions a { text-decoration: none; display: inline-flex; align-items: center; }
+        .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+        .danger-tip { font-size: 12px; color: #c00; margin-top: 8px; line-height: 1.6; }
 
         .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #ccc; border-top-color: #1a1a2e; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-left: 4px; }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -112,6 +139,7 @@
 <div class="panel active" id="panel-upload">
     <div class="card">
         <h3>上传文件到知识库</h3>
+        <div class="section-tip">上传后会写入知识库，原始文件默认保留 7 天，超期后会被自动清理；被清理的原文件将无法再执行补录。</div>
         <div class="upload-zone" id="uploadZone">
             <div style="font-size: 36px; color: #ccc;">+</div>
             <p>点击或拖拽文件到此处（支持 PDF / Word / Markdown / TXT / 图片，可多选）</p>
@@ -125,6 +153,28 @@
         </div>
         <div class="upload-progress" id="uploadProgress"></div>
         <div class="result-box" id="uploadResult"></div>
+    </div>
+
+    <div class="card">
+        <h3>存储清理</h3>
+        <div class="section-tip">上传原文件和生成产物默认保留 7 天，超期后可由定时任务或这里的手动入口清理。上传原文件被清理后，将无法再执行补录。</div>
+        <div class="button-row">
+            <button class="btn btn-primary" id="cleanupUploadsBtn">清理过期上传文件</button>
+            <button class="btn btn-primary" id="cleanupGeneratedBtn">清理过期生成产物</button>
+            <button class="btn" id="cleanupAllBtn">清理全部过期文件</button>
+        </div>
+        <div class="field-grid">
+            <div class="field">
+                <label for="purgeFilenameInput">彻底移除知识库内容（输入存储文件名）</label>
+                <input type="text" id="purgeFilenameInput" list="directiveFilenameOptions" placeholder="例如：通知_20260420.pdf" />
+            </div>
+            <div class="field" style="justify-content:flex-end;">
+                <label>&nbsp;</label>
+                <button class="btn" id="purgeUploadedFileBtn">彻底清理该上传文件</button>
+            </div>
+        </div>
+        <div class="danger-tip">“彻底清理”会同时删除本地上传文件、向量库和 ES 中对应内容，请仅在确认不再需要该知识时使用。</div>
+        <div class="generated-result" id="cleanupResult"></div>
     </div>
 </div>
 
@@ -158,13 +208,76 @@
 <!-- Generate Panel -->
 <div class="panel" id="panel-generate">
     <div class="card">
-        <h3>文档生成</h3>
+        <h3>文档预览</h3>
         <div class="generate-input-row">
             <input type="text" id="generateInput" placeholder="输入生成指令，例如：根据新规定撰写一份风控报告..." />
             <button class="btn btn-primary" id="generateBtn">生成</button>
         </div>
         <div id="generateOutput" style="background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; min-height: 200px; max-height: 500px; overflow-y: auto; white-space: pre-wrap; font-size: 14px; line-height: 1.6; display: none;"></div>
-        <div class="empty-state" id="generateEmpty">输入指令开始生成文档</div>
+        <div class="empty-state" id="generateEmpty">输入指令开始生成文档预览</div>
+    </div>
+
+    <div class="card">
+        <h3>生成文件产物</h3>
+        <div class="section-tip">保留预览能力的同时，可将生成结果保存为 Markdown 或 Word；如需强制带入某个已上传通知，可填写该文件的存储文件名。生成产物默认保留 7 天，超期后将无法下载。</div>
+        <div class="generate-input-row">
+            <input type="text" id="generateFileInstruction" placeholder="输入生成指令，例如：根据新规定输出正式风控报告..." />
+            <button class="btn btn-primary" id="generateFileBtn">生成文件</button>
+        </div>
+        <div class="field-grid">
+            <div class="field">
+                <label for="generateDirectiveFilename">指定通知文件名（可选）</label>
+                <input type="text" id="generateDirectiveFilename" list="directiveFilenameOptions" placeholder="例如：通知_20260420.pdf" />
+            </div>
+            <div class="field">
+                <label for="generateOutputFormat">输出格式</label>
+                <select id="generateOutputFormat">
+                    <option value="markdown">Markdown</option>
+                    <option value="docx">Word (.docx)</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="generateDocumentTitle">文档标题（可选）</label>
+                <input type="text" id="generateDocumentTitle" placeholder="留空则自动生成" />
+            </div>
+            <div class="field">
+                <label for="generateOutputFilename">输出文件名（可选）</label>
+                <input type="text" id="generateOutputFilename" placeholder="留空则按标题生成" />
+            </div>
+        </div>
+        <datalist id="directiveFilenameOptions"></datalist>
+        <div class="generated-result" id="generateFileResult"></div>
+    </div>
+
+    <div class="card">
+        <h3>上传新通知并立即生成</h3>
+        <div class="section-tip">适合“新通知还没入库”的场景。上传后会自动入库，并基于该通知和历史材料直接生成文件产物。该通知原文件默认保留 7 天，超期后无法补录。</div>
+        <div class="file-picker">
+            <input type="file" id="uploadGenerateFile" accept=".pdf,.doc,.docx,.md,.txt,.html,.json,.jpg,.jpeg,.png,.bmp,.tiff,.gif">
+            <span class="file-name" id="uploadGenerateFileName">未选择文件</span>
+        </div>
+        <div class="generate-input-row">
+            <input type="text" id="uploadGenerateInstruction" placeholder="输入生成指令，例如：根据这份新通知起草一版合规整改方案..." />
+            <button class="btn btn-primary" id="uploadAndGenerateBtn">上传并生成</button>
+        </div>
+        <div class="field-grid">
+            <div class="field">
+                <label for="uploadGenerateOutputFormat">输出格式</label>
+                <select id="uploadGenerateOutputFormat">
+                    <option value="markdown">Markdown</option>
+                    <option value="docx">Word (.docx)</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="uploadGenerateDocumentTitle">文档标题（可选）</label>
+                <input type="text" id="uploadGenerateDocumentTitle" placeholder="留空则自动生成" />
+            </div>
+            <div class="field">
+                <label for="uploadGenerateOutputFilename">输出文件名（可选）</label>
+                <input type="text" id="uploadGenerateOutputFilename" placeholder="留空则按标题生成" />
+            </div>
+        </div>
+        <div class="generated-result" id="uploadGenerateResult"></div>
     </div>
 </div>
 
@@ -192,6 +305,7 @@ function generateChatId() {
 
 let chatId = generateChatId();
 let currentDomain = 'bank_risk';
+let uploadedDirectiveFiles = [];
 document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
 
 // --- Domain Tags ---
@@ -207,6 +321,209 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+function upsertUploadedDirectiveFile(storedFilename) {
+    if (!storedFilename || uploadedDirectiveFiles.includes(storedFilename)) return;
+    uploadedDirectiveFiles.push(storedFilename);
+    uploadedDirectiveFiles.sort((a, b) => a.localeCompare(b, 'zh-CN'));
+    renderDirectiveFilenameOptions();
+}
+
+function renderDirectiveFilenameOptions() {
+    const datalist = document.getElementById('directiveFilenameOptions');
+    if (!datalist) return;
+    datalist.innerHTML = '';
+    uploadedDirectiveFiles.forEach(filename => {
+        const option = document.createElement('option');
+        option.value = filename;
+        datalist.appendChild(option);
+    });
+}
+
+function appendOptionalFormField(form, name, value) {
+    if (value && value.trim()) {
+        form.append(name, value.trim());
+    }
+}
+
+function setGeneratedLoading(container, text) {
+    container.className = 'generated-result show';
+    container.innerHTML = '<span class="spinner"></span> ' + escapeHtml(text);
+}
+
+function setGeneratedError(container, message) {
+    container.className = 'generated-result show error';
+    container.textContent = message;
+}
+
+function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+        value /= 1024;
+        idx++;
+    }
+    return value.toFixed(value >= 10 || idx === 0 ? 0 : 1) + ' ' + units[idx];
+}
+
+function appendMetaItem(parent, label, value) {
+    if (!value) return;
+    const item = document.createElement('div');
+    item.className = 'generated-meta-item';
+    item.innerHTML = '<div class="label">' + escapeHtml(label) + '</div><div class="value">' + escapeHtml(value) + '</div>';
+    parent.appendChild(item);
+}
+
+function appendSectionTitle(parent, title) {
+    const sectionTitle = document.createElement('div');
+    sectionTitle.className = 'generated-section-title';
+    sectionTitle.textContent = title;
+    parent.appendChild(sectionTitle);
+}
+
+function renderGeneratedFileResult(container, data) {
+    container.className = 'generated-result show';
+    container.innerHTML = '';
+
+    const actions = document.createElement('div');
+    actions.className = 'result-actions';
+    if (data.outputFilename) {
+        const downloadLink = document.createElement('a');
+        downloadLink.className = 'btn btn-primary';
+        downloadLink.href = '/pro-rag/generated-files/' + encodeURIComponent(data.outputFilename);
+        downloadLink.download = data.outputFilename;
+        downloadLink.textContent = '下载文件';
+        actions.appendChild(downloadLink);
+    }
+    container.appendChild(actions);
+
+    const meta = document.createElement('div');
+    meta.className = 'generated-meta';
+    appendMetaItem(meta, '状态', data.status || '');
+    appendMetaItem(meta, '模板', data.templateName || '');
+    appendMetaItem(meta, '输出格式', data.outputFormat || '');
+    appendMetaItem(meta, '通知文件名', data.directiveFilename || '未指定');
+    appendMetaItem(meta, '输出文件名', data.outputFilename || '');
+    appendMetaItem(meta, '输出路径', data.outputFilePath || '');
+    container.appendChild(meta);
+
+    if (data.directiveFile) {
+        appendSectionTitle(container, '本次上传通知');
+        const directiveMeta = document.createElement('div');
+        directiveMeta.className = 'generated-meta';
+        appendMetaItem(directiveMeta, '原始文件名', data.directiveFile.originalFilename || '');
+        appendMetaItem(directiveMeta, '存储文件名', data.directiveFile.storedFilename || '');
+        appendMetaItem(directiveMeta, '落盘路径', data.directiveFile.filePath || '');
+        appendMetaItem(directiveMeta, '分片数', data.directiveFile.chunks == null ? '' : String(data.directiveFile.chunks));
+        container.appendChild(directiveMeta);
+    }
+
+    appendSectionTitle(container, '内容预览');
+    const preview = document.createElement('div');
+    preview.className = 'generated-preview';
+    preview.textContent = data.previewContent || '无预览内容';
+    container.appendChild(preview);
+
+    appendSectionTitle(container, '参考材料');
+    if (data.referenceMaterials && data.referenceMaterials.length) {
+        const list = document.createElement('div');
+        list.className = 'reference-list';
+        data.referenceMaterials.forEach(item => {
+            const referenceItem = document.createElement('div');
+            referenceItem.className = 'reference-item';
+            referenceItem.innerHTML =
+                '<div class="name">' + escapeHtml(item.filename || '未知文件') + '</div>' +
+                '<div class="path">' + escapeHtml(item.filePath || '') + '</div>' +
+                '<div class="excerpt">' + escapeHtml(item.excerpt || '无摘录') + '</div>';
+            list.appendChild(referenceItem);
+        });
+        container.appendChild(list);
+    } else {
+        const empty = document.createElement('div');
+        empty.className = 'generated-preview';
+        empty.textContent = '未返回参考材料';
+        container.appendChild(empty);
+    }
+
+    if (data.directiveFile && data.directiveFile.storedFilename) {
+        upsertUploadedDirectiveFile(data.directiveFile.storedFilename);
+        document.getElementById('generateDirectiveFilename').value = data.directiveFile.storedFilename;
+    } else if (data.directiveFilename) {
+        upsertUploadedDirectiveFile(data.directiveFilename);
+    }
+}
+
+function renderCleanupExecutionResult(container, data) {
+    container.className = 'generated-result show';
+    container.innerHTML = '';
+
+    const meta = document.createElement('div');
+    meta.className = 'generated-meta';
+    appendMetaItem(meta, '执行模式', data.mode || '');
+    appendMetaItem(meta, '清理目标', data.target || '');
+    appendMetaItem(meta, '执行时间', data.executedAt || '');
+    appendMetaItem(meta, '演练模式', data.dryRun ? '是' : '否');
+    appendMetaItem(meta, '删除文件数', String(data.totalDeletedFiles || 0));
+    appendMetaItem(meta, '释放空间', formatBytes(data.totalReleasedBytes || 0));
+    container.appendChild(meta);
+
+    appendSectionTitle(container, '目录明细');
+    if (!data.directories || !data.directories.length) {
+        const empty = document.createElement('div');
+        empty.className = 'generated-preview';
+        empty.textContent = '没有可展示的清理结果';
+        container.appendChild(empty);
+        return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'reference-list';
+    data.directories.forEach(item => {
+        const deletedText = item.deletedFilenames && item.deletedFilenames.length ? item.deletedFilenames.join('\n') : '无';
+        const failedText = item.failedFiles && item.failedFiles.length ? item.failedFiles.join('\n') : '无';
+        const skippedText = item.skippedFiles && item.skippedFiles.length ? item.skippedFiles.join('\n') : '无';
+        const block = document.createElement('div');
+        block.className = 'reference-item';
+        block.innerHTML =
+            '<div class="name">' + escapeHtml(item.target || '') + '</div>' +
+            '<div class="path">' + escapeHtml(item.directoryPath || '') + '</div>' +
+            '<div class="excerpt">' +
+            '保留天数: ' + escapeHtml(String(item.retentionDays || 0)) + '\n' +
+            '扫描文件: ' + escapeHtml(String(item.scannedFiles || 0)) + '\n' +
+            '过期文件: ' + escapeHtml(String(item.expiredFiles || 0)) + '\n' +
+            '已删文件: ' + escapeHtml(String(item.deletedFiles || 0)) + '\n' +
+            '释放空间: ' + escapeHtml(formatBytes(item.releasedBytes || 0)) + '\n' +
+            '已删文件名:\n' + escapeHtml(deletedText) + '\n\n' +
+            '失败项:\n' + escapeHtml(failedText) + '\n\n' +
+            '跳过项:\n' + escapeHtml(skippedText) +
+            '</div>';
+        list.appendChild(block);
+    });
+    container.appendChild(list);
+}
+
+function renderPurgeResult(container, data) {
+    container.className = 'generated-result show';
+    container.innerHTML = '';
+
+    const meta = document.createElement('div');
+    meta.className = 'generated-meta';
+    appendMetaItem(meta, '文件名', data.filename || '');
+    appendMetaItem(meta, '演练模式', data.dryRun ? '是' : '否');
+    appendMetaItem(meta, '本地文件存在', data.uploadFileExisted ? '是' : '否');
+    appendMetaItem(meta, '本地文件已删除', data.uploadFileDeleted ? '是' : '否');
+    appendMetaItem(meta, '向量库清理条数', String(data.vectorDeletedCount || 0));
+    appendMetaItem(meta, 'ES 清理条数', String(data.esDeletedCount || 0));
+    container.appendChild(meta);
+
+    appendSectionTitle(container, '执行结果');
+    const preview = document.createElement('div');
+    preview.className = 'generated-preview';
+    preview.textContent = data.message || '已执行清理';
+    container.appendChild(preview);
 }
 
 // --- Tabs ---
@@ -228,6 +545,12 @@ const uploadResult = document.getElementById('uploadResult');
 const fileList = document.getElementById('fileList');
 const clearBtn = document.getElementById('clearBtn');
 const uploadProgress = document.getElementById('uploadProgress');
+const cleanupUploadsBtn = document.getElementById('cleanupUploadsBtn');
+const cleanupGeneratedBtn = document.getElementById('cleanupGeneratedBtn');
+const cleanupAllBtn = document.getElementById('cleanupAllBtn');
+const purgeFilenameInput = document.getElementById('purgeFilenameInput');
+const purgeUploadedFileBtn = document.getElementById('purgeUploadedFileBtn');
+const cleanupResult = document.getElementById('cleanupResult');
 
 let selectedFiles = [];
 
@@ -325,9 +648,18 @@ uploadBtn.addEventListener('click', async () => {
             const data = await res.json();
             if (res.ok) {
                 successCount++;
+                if (data.storedFilename) {
+                    upsertUploadedDirectiveFile(data.storedFilename);
+                }
                 statusEl.className = 'file-status success';
-                statusEl.textContent = '成功 (' + data.chunks + ' 片段)';
-                results.push({ file: file.name, status: 'success', chunks: data.chunks });
+                statusEl.textContent = '成功 (' + data.chunks + ' 片段' + (data.storedFilename ? ', 存储名: ' + data.storedFilename : '') + ')';
+                results.push({
+                    file: file.name,
+                    storedFilename: data.storedFilename,
+                    filePath: data.filePath,
+                    status: 'success',
+                    chunks: data.chunks
+                });
             } else {
                 failCount++;
                 statusEl.className = 'file-status fail';
@@ -351,6 +683,66 @@ uploadBtn.addEventListener('click', async () => {
     renderFileList();
     setTimeout(() => { uploadProgress.className = 'upload-progress'; }, 5000);
 });
+
+async function runLocalCleanup(target, triggerBtn) {
+    triggerBtn.disabled = true;
+    setGeneratedLoading(cleanupResult, '清理中...');
+    try {
+        const form = new FormData();
+        form.append('target', target);
+        const res = await fetch('/pro-rag/cleanup/local-files', { method: 'POST', body: form });
+        if (!res.ok) {
+            const errData = await res.text();
+            setGeneratedError(cleanupResult, 'Error: ' + errData);
+        } else {
+            const data = await res.json();
+            renderCleanupExecutionResult(cleanupResult, data);
+        }
+    } catch (e) {
+        setGeneratedError(cleanupResult, 'Error: ' + e.message);
+    } finally {
+        triggerBtn.disabled = false;
+    }
+}
+
+cleanupUploadsBtn.addEventListener('click', () => runLocalCleanup('uploads', cleanupUploadsBtn));
+cleanupGeneratedBtn.addEventListener('click', () => runLocalCleanup('generated', cleanupGeneratedBtn));
+cleanupAllBtn.addEventListener('click', () => runLocalCleanup('all', cleanupAllBtn));
+
+purgeUploadedFileBtn.addEventListener('click', async () => {
+    const filename = purgeFilenameInput.value.trim();
+    if (!filename) return;
+
+    purgeUploadedFileBtn.disabled = true;
+    setGeneratedLoading(cleanupResult, '彻底清理中...');
+    try {
+        const form = new FormData();
+        form.append('filename', filename);
+        const res = await fetch('/pro-rag/cleanup/purge-uploaded-file', { method: 'POST', body: form });
+        if (!res.ok) {
+            const errData = await res.text();
+            setGeneratedError(cleanupResult, 'Error: ' + errData);
+        } else {
+            const data = await res.json();
+            renderPurgeResult(cleanupResult, data);
+            if (data.filename) {
+                uploadedDirectiveFiles = uploadedDirectiveFiles.filter(item => item !== data.filename);
+                renderDirectiveFilenameOptions();
+                if (generateDirectiveFilename.value === data.filename) {
+                    generateDirectiveFilename.value = '';
+                }
+                if (purgeFilenameInput.value === data.filename) {
+                    purgeFilenameInput.value = '';
+                }
+            }
+        }
+    } catch (e) {
+        setGeneratedError(cleanupResult, 'Error: ' + e.message);
+    } finally {
+        purgeUploadedFileBtn.disabled = false;
+    }
+});
+purgeFilenameInput.addEventListener('keydown', e => { if (e.key === 'Enter') purgeUploadedFileBtn.click(); });
 
 // --- Chat ---
 const chatMessages = document.getElementById('chatMessages');
@@ -470,6 +862,21 @@ const generateInput = document.getElementById('generateInput');
 const generateBtn = document.getElementById('generateBtn');
 const generateOutput = document.getElementById('generateOutput');
 const generateEmpty = document.getElementById('generateEmpty');
+const generateFileInstruction = document.getElementById('generateFileInstruction');
+const generateDirectiveFilename = document.getElementById('generateDirectiveFilename');
+const generateOutputFormat = document.getElementById('generateOutputFormat');
+const generateDocumentTitle = document.getElementById('generateDocumentTitle');
+const generateOutputFilename = document.getElementById('generateOutputFilename');
+const generateFileBtn = document.getElementById('generateFileBtn');
+const generateFileResult = document.getElementById('generateFileResult');
+const uploadGenerateFile = document.getElementById('uploadGenerateFile');
+const uploadGenerateFileName = document.getElementById('uploadGenerateFileName');
+const uploadGenerateInstruction = document.getElementById('uploadGenerateInstruction');
+const uploadGenerateOutputFormat = document.getElementById('uploadGenerateOutputFormat');
+const uploadGenerateDocumentTitle = document.getElementById('uploadGenerateDocumentTitle');
+const uploadGenerateOutputFilename = document.getElementById('uploadGenerateOutputFilename');
+const uploadAndGenerateBtn = document.getElementById('uploadAndGenerateBtn');
+const uploadGenerateResult = document.getElementById('uploadGenerateResult');
 
 generateBtn.addEventListener('click', async () => {
     const instruction = generateInput.value.trim();
@@ -489,26 +896,99 @@ generateBtn.addEventListener('click', async () => {
         if (!res.ok) {
             const errData = await res.text();
             generateOutput.textContent = 'Error: ' + errData;
-            return;
-        }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        generateOutput.textContent = '';
-        let done = false;
-        while (!done) {
-            const { value, done: d } = await reader.read();
-            done = d;
-            if (value) {
-                generateOutput.textContent += decoder.decode(value, { stream: true });
-                generateOutput.scrollTop = generateOutput.scrollHeight;
+        } else {
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            generateOutput.textContent = '';
+            let done = false;
+            while (!done) {
+                const { value, done: d } = await reader.read();
+                done = d;
+                if (value) {
+                    generateOutput.textContent += decoder.decode(value, { stream: true });
+                    generateOutput.scrollTop = generateOutput.scrollHeight;
+                }
             }
         }
     } catch (e) {
         generateOutput.textContent = 'Error: ' + e.message;
+    } finally {
+        generateBtn.disabled = false;
     }
-    generateBtn.disabled = false;
 });
 generateInput.addEventListener('keydown', e => { if (e.key === 'Enter') generateBtn.click(); });
+
+generateFileBtn.addEventListener('click', async () => {
+    const instruction = generateFileInstruction.value.trim();
+    if (!instruction) return;
+
+    generateFileBtn.disabled = true;
+    setGeneratedLoading(generateFileResult, '文件生成中...');
+
+    try {
+        const form = new FormData();
+        form.append('chatId', chatId);
+        form.append('instruction', instruction);
+        form.append('domain', currentDomain);
+        form.append('outputFormat', generateOutputFormat.value);
+        appendOptionalFormField(form, 'directiveFilename', generateDirectiveFilename.value);
+        appendOptionalFormField(form, 'documentTitle', generateDocumentTitle.value);
+        appendOptionalFormField(form, 'outputFilename', generateOutputFilename.value);
+
+        const res = await fetch('/pro-rag/generate-file', { method: 'POST', body: form });
+        if (!res.ok) {
+            const errData = await res.text();
+            setGeneratedError(generateFileResult, 'Error: ' + errData);
+        } else {
+            const data = await res.json();
+            renderGeneratedFileResult(generateFileResult, data);
+        }
+    } catch (e) {
+        setGeneratedError(generateFileResult, 'Error: ' + e.message);
+    } finally {
+        generateFileBtn.disabled = false;
+    }
+});
+generateFileInstruction.addEventListener('keydown', e => { if (e.key === 'Enter') generateFileBtn.click(); });
+
+uploadGenerateFile.addEventListener('change', () => {
+    const file = uploadGenerateFile.files && uploadGenerateFile.files[0];
+    uploadGenerateFileName.textContent = file ? file.name : '未选择文件';
+});
+
+uploadAndGenerateBtn.addEventListener('click', async () => {
+    const file = uploadGenerateFile.files && uploadGenerateFile.files[0];
+    const instruction = uploadGenerateInstruction.value.trim();
+    if (!file || !instruction) return;
+
+    uploadAndGenerateBtn.disabled = true;
+    setGeneratedLoading(uploadGenerateResult, '上传并生成中...');
+
+    try {
+        const form = new FormData();
+        form.append('file', file);
+        form.append('chatId', chatId);
+        form.append('instruction', instruction);
+        form.append('domain', currentDomain);
+        form.append('outputFormat', uploadGenerateOutputFormat.value);
+        appendOptionalFormField(form, 'documentTitle', uploadGenerateDocumentTitle.value);
+        appendOptionalFormField(form, 'outputFilename', uploadGenerateOutputFilename.value);
+
+        const res = await fetch('/pro-rag/upload-and-generate', { method: 'POST', body: form });
+        if (!res.ok) {
+            const errData = await res.text();
+            setGeneratedError(uploadGenerateResult, 'Error: ' + errData);
+        } else {
+            const data = await res.json();
+            renderGeneratedFileResult(uploadGenerateResult, data);
+        }
+    } catch (e) {
+        setGeneratedError(uploadGenerateResult, 'Error: ' + e.message);
+    } finally {
+        uploadAndGenerateBtn.disabled = false;
+    }
+});
+uploadGenerateInstruction.addEventListener('keydown', e => { if (e.key === 'Enter') uploadAndGenerateBtn.click(); });
 </script>
 </body>
 </html>

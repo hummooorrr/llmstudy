@@ -42,5 +42,11 @@ spring.servlet.multipart:
 pro-rag:
   upload-dir: ${PRO_RAG_UPLOAD_DIR:./pro-rag-files}
   generated-dir: ${PRO_RAG_GENERATED_DIR:./pro-rag-generated}
+  cleanup:
+    enabled: ${PRO_RAG_CLEANUP_ENABLED:true}
+    upload-retention-days: ${PRO_RAG_UPLOAD_RETENTION_DAYS:7}
+    generated-retention-days: ${PRO_RAG_GENERATED_RETENTION_DAYS:7}
+    cron: ${PRO_RAG_CLEANUP_CRON:0 30 3 * * ?}
+    dry-run: ${PRO_RAG_CLEANUP_DRY_RUN:false}
   rerank:
     enabled: ${PRO_RAG_RERANK_ENABLED:true}
