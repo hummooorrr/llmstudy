@@ -35,6 +35,12 @@ vim .env
 mkdir -p nginx data/uploads data/generated
 ```
 
+如果之前误创建过 `nginx/.htpasswd` 目录，先删掉：
+
+```bash
+rm -rf nginx/.htpasswd
+```
+
 生成账号密码文件，下面示例账号是 `mom`：
 
 ```bash
@@ -68,6 +74,12 @@ docker compose logs -f app
 docker compose logs -f nginx
 docker compose logs -f postgres
 docker compose logs -f elasticsearch
+```
+
+如果你改过 `nginx.conf` 或 `.htpasswd`，重启 `nginx` 即可：
+
+```bash
+docker compose restart nginx
 ```
 
 ## 5. 访问方式
