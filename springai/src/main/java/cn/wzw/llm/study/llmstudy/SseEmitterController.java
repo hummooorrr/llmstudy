@@ -15,6 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.Executors;
 
+
+/**
+ * 流式输出练习
+ */
 @RestController
 @RequestMapping("/stream/output")
 public class SseEmitterController {

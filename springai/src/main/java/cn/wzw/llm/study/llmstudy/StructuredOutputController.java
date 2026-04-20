@@ -20,6 +20,9 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 结构化输出练习
+ */
 @RestController
 @RequestMapping("/ai/structure")
 public class StructuredOutputController implements InitializingBean {

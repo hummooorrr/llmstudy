@@ -27,6 +27,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 提示词工程替换变量
+ */
 @RestController
 @RequestMapping("/client")
 public class ChatClientController implements InitializingBean {

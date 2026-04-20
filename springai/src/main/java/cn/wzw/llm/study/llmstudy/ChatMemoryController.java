@@ -23,6 +23,10 @@ import reactor.core.publisher.Flux;
 import java.util.ArrayList;
 import java.util.List;
 
+
+/**
+ * 短期记忆和长期记忆练习
+ */
 @RestController
 @RequestMapping("/ai/memory")
 public class ChatMemoryController implements InitializingBean {
