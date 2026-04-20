@@ -5,7 +5,7 @@ WORKDIR /build
 COPY . .
 
 RUN chmod +x mvnw \
-    && ./mvnw -Dmaven.repo.local=/build/.m2 -pl pro-rag -am clean package -DskipTests
+    && ./mvnw -Dmaven.repo.local=/build/.m2 -pl pro-rag -am clean package -Dmaven.test.skip=true
 
 FROM eclipse-temurin:21-jre-jammy
 
