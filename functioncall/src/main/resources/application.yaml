@@ -3,10 +3,10 @@ spring:
     name: functioncall
   ai:
     zhipuai:
-      api-key: {自己填充}
+      api-key: ${ZHIPU_API_KEY:}
       chat:
         options:
-          model: glm-4.5-Air
+          model: ${FUNCTIONCALL_CHAT_MODEL:glm-4.5-Air}
 
 server:
-  port: 28688
+  port: ${SERVER_PORT:28690}
