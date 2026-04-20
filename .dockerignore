@@ -1,0 +1,6 @@
+.git
+.idea
+.mvn/wrapper/maven-wrapper.jar
+**/target
+**/.DS_Store
+deploy/pro-rag/data
