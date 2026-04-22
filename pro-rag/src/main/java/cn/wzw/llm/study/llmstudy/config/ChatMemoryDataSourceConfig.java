@@ -31,6 +31,29 @@ public class ChatMemoryDataSourceConfig {
     @Value("${pro-rag.chat-memory.initialize-schema:true}")
     private boolean initializeSchema;
 
+    /**
+     * 一旦项目显式声明了任意 DataSource，Spring Boot 的默认 DataSource 自动配置就会回退。
+     * 因此这里把主库（PostgreSQL）也显式声明出来，供 pgvector / Embedding 相关组件使用。
+     */
+    @Bean(name = "dataSourceProperties")
+    @Primary
+    @ConfigurationProperties("spring.datasource")
+    public DataSourceProperties dataSourceProperties() {
+        return new DataSourceProperties();
+    }
+
+    @Bean(name = "dataSource")
+    @Primary
+    public DataSource dataSource(
+            @Qualifier("dataSourceProperties") DataSourceProperties props) {
+        HikariDataSource ds = props.initializeDataSourceBuilder().type(HikariDataSource.class).build();
+        ds.setPoolName("PrimaryPgHikari");
+        ds.setMaximumPoolSize(10);
+        ds.setMinimumIdle(2);
+        ds.setConnectionTimeout(30_000);
+        return ds;
+    }
+
     @Bean
     @ConfigurationProperties("pro-rag.chat-memory.datasource")
     public DataSourceProperties chatMemoryDataSourceProperties() {
@@ -69,7 +92,7 @@ public class ChatMemoryDataSourceConfig {
      */
     @Bean(name = "jdbcTemplate")
     @Primary
-    public JdbcTemplate primaryJdbcTemplate(DataSource dataSource) {
+    public JdbcTemplate primaryJdbcTemplate(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcTemplate(dataSource);
     }
 
