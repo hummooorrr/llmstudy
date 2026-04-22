@@ -1708,14 +1708,18 @@ const refsList = document.getElementById('refsList');
 const refsCount = document.getElementById('refsCount');
 
 let currentReferences = [];
+let currentReferencesMessageId = null;
 let currentEventSource = null;
+const messageReferences = new Map();
+let assistantMessageSeq = 0;
 
-function renderAnswerHtml(text) {
+function renderAnswerHtml(text, refs) {
     if (!text) return '';
+    const messageRefs = refs || [];
     const escaped = escapeHtml(text);
     return escaped.replace(/\[\^c(\d+)\]/g, (match, num) => {
         const refId = 'c' + num;
-        const isKnown = currentReferences.some(r => r.refId === refId);
+        const isKnown = messageRefs.some(r => r.refId === refId);
         const cls = isKnown ? 'cite' : 'cite';
         return `<sup class="${cls}" data-ref="${refId}">[${num}]</sup>`;
     });
@@ -1730,7 +1734,7 @@ function appendMsg(role, text) {
     const bubble = div.querySelector('.bubble');
     if (role === 'assistant') {
         bubble.dataset.raw = text || '';
-        bubble.innerHTML = renderAnswerHtml(text || '');
+        bubble.innerHTML = renderAnswerHtml(text || '', []);
     } else {
         bubble.textContent = text;
     }
@@ -1739,8 +1743,9 @@ function appendMsg(role, text) {
     return bubble;
 }
 
-function renderReferences(refs) {
+function renderReferences(refs, messageId) {
     currentReferences = refs || [];
+    currentReferencesMessageId = messageId || null;
     if (!currentReferences.length) {
         refsCard.style.display = 'none';
         refsCount.textContent = '';
@@ -1772,22 +1777,31 @@ function renderReferences(refs) {
     });
 }
 
-function markUsedRefs(usedRefIds) {
+function markUsedRefs(usedRefIds, bubble, messageId) {
     const set = new Set(usedRefIds || []);
-    document.querySelectorAll('#refsList .ref-item').forEach(item => {
-        if (set.has(item.dataset.ref)) {
-            item.classList.add('used');
-        }
-    });
-    document.querySelectorAll('.bubble sup.cite').forEach(el => {
+    if (messageId && currentReferencesMessageId === messageId) {
+        document.querySelectorAll('#refsList .ref-item').forEach(item => {
+            if (set.has(item.dataset.ref)) {
+                item.classList.add('used');
+            }
+        });
+    }
+    if (!bubble) return;
+    bubble.querySelectorAll('sup.cite').forEach(el => {
         if (set.has(el.dataset.ref)) {
             el.classList.add('used');
         }
     });
 }
 
-function findRefByRefId(refId) {
-    return currentReferences.find(r => r.refId === refId);
+function nextAssistantMessageId() {
+    assistantMessageSeq += 1;
+    return 'm' + Date.now() + '_' + assistantMessageSeq;
+}
+
+function findRefByRefId(refId, messageId) {
+    const refs = messageId ? (messageReferences.get(messageId) || []) : currentReferences;
+    return refs.find(r => r.refId === refId);
 }
 
 function sendChat() {
@@ -1801,9 +1815,12 @@ function sendChat() {
         try { currentEventSource.close(); } catch (_) {}
         currentEventSource = null;
     }
-    renderReferences([]);
+    renderReferences([], null);
 
     const bubble = appendMsg('assistant', '');
+    const messageId = nextAssistantMessageId();
+    bubble.dataset.messageId = messageId;
+    messageReferences.set(messageId, []);
     bubble.innerHTML = '<span class="spinner"></span>';
 
     const url = '/pro-rag/chat/sse?message=' + encodeURIComponent(msg)
@@ -1817,7 +1834,12 @@ function sendChat() {
     es.addEventListener('references', ev => {
         try {
             const data = JSON.parse(ev.data);
-            renderReferences(data.items || []);
+            const refs = data.items || [];
+            messageReferences.set(messageId, refs);
+            renderReferences(refs, messageId);
+            if (started) {
+                bubble.innerHTML = renderAnswerHtml(answer, refs);
+            }
         } catch (e) { console.error('references parse failed', e); }
     });
     es.addEventListener('message', ev => {
@@ -1827,7 +1849,7 @@ function sendChat() {
                 if (!started) { bubble.innerHTML = ''; started = true; }
                 answer += data.delta;
                 bubble.dataset.raw = answer;
-                bubble.innerHTML = renderAnswerHtml(answer);
+                bubble.innerHTML = renderAnswerHtml(answer, messageReferences.get(messageId) || []);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
         } catch (e) { console.error('message parse failed', e); }
@@ -1835,7 +1857,7 @@ function sendChat() {
     es.addEventListener('done', ev => {
         try {
             const data = JSON.parse(ev.data);
-            markUsedRefs(data.usedRefIds || []);
+            markUsedRefs(data.usedRefIds || [], bubble, messageId);
         } catch (_) {}
         es.close();
         currentEventSource = null;
@@ -1869,7 +1891,9 @@ chatMessages.addEventListener('click', e => {
     const sup = e.target.closest('sup.cite');
     if (!sup) return;
     const refId = sup.dataset.ref;
-    const ref = findRefByRefId(refId);
+    const bubble = sup.closest('.bubble');
+    const messageId = bubble && bubble.dataset ? bubble.dataset.messageId : null;
+    const ref = findRefByRefId(refId, messageId);
     if (!ref) return;
     openChunkModal(ref.chunkId, ref);
 });
@@ -1900,7 +1924,15 @@ async function openChunkModal(chunkId, refHint) {
     chunkModalBody.innerHTML = '<div style="text-align:center;padding:30px;color:#aaa;"><span class="spinner"></span> 加载中...</div>';
     chunkModal.classList.add('show');
     try {
-        const res = await fetch('/pro-rag/chunk/' + encodeURIComponent(chunkId));
+        const query = new URLSearchParams();
+        if (refHint && refHint.filename) query.set('filename', refHint.filename);
+        if (refHint && refHint.pageNumber != null) query.set('pageNumber', String(refHint.pageNumber));
+        if (refHint && refHint.excerpt) query.set('excerpt', refHint.excerpt);
+        if (refHint && refHint.sectionPath) query.set('sectionPath', refHint.sectionPath);
+        if (refHint && refHint.chunkType) query.set('chunkType', refHint.chunkType);
+        const url = '/pro-rag/chunk/' + encodeURIComponent(chunkId)
+            + (query.toString() ? '?' + query.toString() : '');
+        const res = await fetch(url);
         if (!res.ok) {
             chunkModalBody.innerHTML = '<div style="color:#c00;">未找到该 chunk（可能已被清理）</div>';
             return;
@@ -1950,7 +1982,10 @@ document.getElementById('chatNewBtn').addEventListener('click', () => {
     chatId = generateChatId();
     document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
     if (currentEventSource) { try { currentEventSource.close(); } catch (_) {} currentEventSource = null; }
-    renderReferences([]);
+    currentReferences = [];
+    currentReferencesMessageId = null;
+    messageReferences.clear();
+    renderReferences([], null);
 });
 
 // --- Locate ---

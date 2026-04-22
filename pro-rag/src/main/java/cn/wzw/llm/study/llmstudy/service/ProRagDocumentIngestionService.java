@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 文件接收、分片和入库服务。
@@ -74,7 +75,7 @@ public class ProRagDocumentIngestionService {
         Path storedPath = resolveUniquePath(uploadPath, originalFilename);
         file.transferTo(storedPath.toFile());
 
-        List<Document> chunks = splitDocuments(storedPath.toFile(), profileOverride);
+        List<Document> chunks = normalizeChunkIds(splitDocuments(storedPath.toFile(), profileOverride));
         if (CollectionUtils.isEmpty(chunks)) {
             throw new IllegalArgumentException("文件解析后没有可入库内容: " + originalFilename);
         }
@@ -238,7 +239,7 @@ public class ProRagDocumentIngestionService {
             log.warn("查询 ES 旧数据失败: {}", e.getMessage());
         }
 
-        List<Document> chunks = splitDocuments(filePath.toFile(), profileOverride);
+        List<Document> chunks = normalizeChunkIds(splitDocuments(filePath.toFile(), profileOverride));
         if (CollectionUtils.isEmpty(chunks)) {
             throw new IllegalArgumentException("文件解析后没有可入库内容: " + safeName);
         }
@@ -284,5 +285,33 @@ public class ProRagDocumentIngestionService {
                     return new Document(text, doc.getMetadata());
                 })
                 .toList();
+    }
+
+    /**
+     * 统一把逻辑 chunkId 和 Document.id 对齐，确保向量库/ES/前端引用使用同一主键。
+     */
+    private List<Document> normalizeChunkIds(List<Document> chunks) {
+        if (CollectionUtils.isEmpty(chunks)) {
+            return chunks;
+        }
+        return chunks.stream().map(doc -> {
+            Map<String, Object> metadata = doc.getMetadata() == null
+                    ? new LinkedHashMap<>()
+                    : new LinkedHashMap<>(doc.getMetadata());
+            String chunkId = resolveChunkId(doc, metadata);
+            metadata.put(ChunkMetadataKeys.CHUNK_ID, chunkId);
+            return new Document(chunkId, doc.getText(), metadata);
+        }).toList();
+    }
+
+    private String resolveChunkId(Document doc, Map<String, Object> metadata) {
+        Object existingChunkId = metadata.get(ChunkMetadataKeys.CHUNK_ID);
+        if (existingChunkId != null && StringUtils.hasText(existingChunkId.toString())) {
+            return existingChunkId.toString();
+        }
+        if (doc != null && StringUtils.hasText(doc.getId())) {
+            return doc.getId();
+        }
+        return UUID.randomUUID().toString();
     }
 }
