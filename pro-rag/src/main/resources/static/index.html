@@ -115,6 +115,50 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         .empty-state { text-align: center; padding: 60px 20px; color: #aaa; font-size: 14px; }
+
+        /* Chat citation layout */
+        .chat-grid { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; }
+        @media (max-width: 900px) { .chat-grid { grid-template-columns: 1fr; } }
+        .refs-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; max-height: 560px; overflow-y: auto; }
+        .refs-card h4 { font-size: 14px; color: #1a1a2e; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .refs-card h4 .count { font-size: 12px; color: #888; font-weight: normal; }
+        .ref-item { border: 1px solid #eee; border-radius: 6px; padding: 10px; margin-bottom: 8px; cursor: pointer; transition: all .15s; background: #fafafa; }
+        .ref-item:hover { border-color: #1a1a2e; background: #fff; }
+        .ref-item.used { border-color: #ffa726; background: #fff8e1; }
+        .ref-item .ref-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+        .ref-item .ref-id { display: inline-block; min-width: 22px; text-align: center; font-size: 11px; font-weight: 600; color: #fff; background: #1a1a2e; padding: 2px 6px; border-radius: 10px; }
+        .ref-item.used .ref-id { background: #ff8f00; }
+        .ref-item .ref-filename { font-size: 13px; color: #333; font-weight: 500; flex: 1; word-break: break-all; }
+        .ref-item .ref-type { font-size: 10px; padding: 1px 6px; border-radius: 8px; color: #fff; }
+        .ref-type.TEXT { background: #78909c; }
+        .ref-type.TABLE { background: #43a047; }
+        .ref-type.IMAGE { background: #8e24aa; }
+        .ref-item .ref-section { font-size: 11px; color: #888; margin-bottom: 4px; }
+        .ref-item .ref-excerpt { font-size: 12px; color: #555; line-height: 1.5; max-height: 52px; overflow: hidden; text-overflow: ellipsis; }
+
+        /* Citation superscript */
+        sup.cite { color: #1a73e8; cursor: pointer; font-weight: 600; padding: 0 2px; user-select: none; }
+        sup.cite:hover { color: #d32f2f; text-decoration: underline; }
+        sup.cite.used { color: #ff8f00; }
+
+        /* Modal */
+        .modal-mask { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
+        .modal-mask.show { display: flex; }
+        .modal { background: #fff; border-radius: 10px; max-width: 720px; width: 90%; max-height: 86vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 8px 24px rgba(0,0,0,0.15); }
+        .modal-header { padding: 14px 18px; border-bottom: 1px solid #eee; display: flex; align-items: center; justify-content: space-between; }
+        .modal-header .title { font-size: 15px; font-weight: 600; color: #1a1a2e; word-break: break-all; }
+        .modal-header .close { font-size: 22px; color: #999; cursor: pointer; padding: 0 6px; }
+        .modal-header .close:hover { color: #333; }
+        .modal-body { padding: 14px 18px; overflow-y: auto; font-size: 13px; line-height: 1.7; }
+        .modal-body table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+        .modal-body table th, .modal-body table td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
+        .modal-body table th { background: #f5f5f5; font-weight: 600; }
+        .modal-body img { max-width: 100%; border-radius: 6px; margin: 4px 0; }
+        .modal-meta { font-size: 12px; color: #666; margin-bottom: 10px; }
+        .modal-meta span { display: inline-block; background: #f2f2f2; padding: 2px 8px; border-radius: 10px; margin-right: 6px; }
+        .modal-siblings { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #ddd; }
+        .modal-siblings h5 { font-size: 12px; color: #888; margin-bottom: 6px; }
+        .modal-siblings .sibling { font-size: 12px; color: #555; padding: 6px 8px; background: #fafafa; border-radius: 4px; margin-bottom: 4px; white-space: pre-wrap; }
     </style>
 </head>
 <body>
@@ -182,14 +226,33 @@
 <div class="panel" id="panel-chat">
     <div class="card">
         <h3>RAG 智能问答</h3>
-        <div class="chat-messages" id="chatMessages">
-            <div class="empty-state" id="chatEmpty">输入问题开始对话</div>
+        <div class="chat-grid">
+            <div>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="empty-state" id="chatEmpty">输入问题开始对话</div>
+                </div>
+                <div class="chat-input-row">
+                    <input type="text" id="chatInput" placeholder="输入你的问题..." />
+                    <button class="btn btn-primary" id="chatSendBtn">发送</button>
+                    <button class="btn" id="chatNewBtn" title="清空上下文，开始新对话">新对话</button>
+                </div>
+            </div>
+            <div class="refs-card" id="refsCard" style="display:none;">
+                <h4><span>参考文档</span><span class="count" id="refsCount"></span></h4>
+                <div id="refsList"></div>
+            </div>
         </div>
-        <div class="chat-input-row">
-            <input type="text" id="chatInput" placeholder="输入你的问题..." />
-            <button class="btn btn-primary" id="chatSendBtn">发送</button>
-            <button class="btn" id="chatNewBtn" title="清空上下文，开始新对话">新对话</button>
+    </div>
+</div>
+
+<!-- Chunk Preview Modal -->
+<div class="modal-mask" id="chunkModal">
+    <div class="modal">
+        <div class="modal-header">
+            <div class="title" id="chunkModalTitle">引用详情</div>
+            <div class="close" id="chunkModalClose">×</div>
         </div>
+        <div class="modal-body" id="chunkModalBody"></div>
     </div>
 </div>
 
@@ -749,61 +812,254 @@ const chatMessages = document.getElementById('chatMessages');
 const chatInput = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
 const chatEmpty = document.getElementById('chatEmpty');
+const refsCard = document.getElementById('refsCard');
+const refsList = document.getElementById('refsList');
+const refsCount = document.getElementById('refsCount');
+
+let currentReferences = [];
+let currentEventSource = null;
+
+function renderAnswerHtml(text) {
+    if (!text) return '';
+    const escaped = escapeHtml(text);
+    return escaped.replace(/\[\^c(\d+)\]/g, (match, num) => {
+        const refId = 'c' + num;
+        const isKnown = currentReferences.some(r => r.refId === refId);
+        const cls = isKnown ? 'cite' : 'cite';
+        return `<sup class="${cls}" data-ref="${refId}">[${num}]</sup>`;
+    });
+}
 
 function appendMsg(role, text) {
-    chatEmpty.style.display = 'none';
+    const emptyEl = document.getElementById('chatEmpty');
+    if (emptyEl) emptyEl.style.display = 'none';
     const div = document.createElement('div');
     div.className = 'msg ' + role;
     div.innerHTML = '<div class="bubble"></div>';
-    div.querySelector('.bubble').textContent = text;
+    const bubble = div.querySelector('.bubble');
+    if (role === 'assistant') {
+        bubble.dataset.raw = text || '';
+        bubble.innerHTML = renderAnswerHtml(text || '');
+    } else {
+        bubble.textContent = text;
+    }
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
-    return div.querySelector('.bubble');
+    return bubble;
 }
 
-async function sendChat() {
+function renderReferences(refs) {
+    currentReferences = refs || [];
+    if (!currentReferences.length) {
+        refsCard.style.display = 'none';
+        refsCount.textContent = '';
+        return;
+    }
+    refsCard.style.display = 'block';
+    refsCount.textContent = '共 ' + currentReferences.length + ' 条';
+    refsList.innerHTML = '';
+    currentReferences.forEach(ref => {
+        const el = document.createElement('div');
+        el.className = 'ref-item';
+        el.dataset.ref = ref.refId;
+        el.dataset.chunkId = ref.chunkId || '';
+        const chunkType = (ref.chunkType || 'TEXT').toUpperCase();
+        const num = (ref.refId || '').replace(/^c/, '');
+        const section = ref.sectionPath ? `<div class="ref-section">${escapeHtml(ref.sectionPath)}</div>` : '';
+        const pageTag = ref.pageNumber != null ? ` · 第 ${ref.pageNumber} 页` : '';
+        el.innerHTML = `
+            <div class="ref-head">
+                <span class="ref-id">${escapeHtml(num)}</span>
+                <span class="ref-filename">${escapeHtml(ref.filename || '')}${escapeHtml(pageTag)}</span>
+                <span class="ref-type ${chunkType}">${chunkType}</span>
+            </div>
+            ${section}
+            <div class="ref-excerpt">${escapeHtml(ref.excerpt || '')}</div>
+        `;
+        el.addEventListener('click', () => openChunkModal(ref.chunkId, ref));
+        refsList.appendChild(el);
+    });
+}
+
+function markUsedRefs(usedRefIds) {
+    const set = new Set(usedRefIds || []);
+    document.querySelectorAll('#refsList .ref-item').forEach(item => {
+        if (set.has(item.dataset.ref)) {
+            item.classList.add('used');
+        }
+    });
+    document.querySelectorAll('.bubble sup.cite').forEach(el => {
+        if (set.has(el.dataset.ref)) {
+            el.classList.add('used');
+        }
+    });
+}
+
+function findRefByRefId(refId) {
+    return currentReferences.find(r => r.refId === refId);
+}
+
+function sendChat() {
     const msg = chatInput.value.trim();
     if (!msg) return;
     chatInput.value = '';
     appendMsg('user', msg);
     chatSendBtn.disabled = true;
 
+    if (currentEventSource) {
+        try { currentEventSource.close(); } catch (_) {}
+        currentEventSource = null;
+    }
+    renderReferences([]);
+
     const bubble = appendMsg('assistant', '');
     bubble.innerHTML = '<span class="spinner"></span>';
 
-    try {
-        const res = await fetch('/pro-rag/chat?message=' + encodeURIComponent(msg) + '&chatId=' + chatId + '&domain=' + currentDomain);
-        if (!res.ok) {
-            const errData = await res.text();
-            bubble.textContent = 'Error: ' + errData;
-            return;
-        }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        bubble.textContent = '';
-        let done = false;
-        while (!done) {
-            const { value, done: d } = await reader.read();
-            done = d;
-            if (value) {
-                bubble.textContent += decoder.decode(value, { stream: true });
+    const url = '/pro-rag/chat/sse?message=' + encodeURIComponent(msg)
+        + '&chatId=' + encodeURIComponent(chatId)
+        + '&domain=' + encodeURIComponent(currentDomain);
+    const es = new EventSource(url);
+    currentEventSource = es;
+
+    let answer = '';
+    let started = false;
+    es.addEventListener('references', ev => {
+        try {
+            const data = JSON.parse(ev.data);
+            renderReferences(data.items || []);
+        } catch (e) { console.error('references parse failed', e); }
+    });
+    es.addEventListener('message', ev => {
+        try {
+            const data = JSON.parse(ev.data);
+            if (data.delta) {
+                if (!started) { bubble.innerHTML = ''; started = true; }
+                answer += data.delta;
+                bubble.dataset.raw = answer;
+                bubble.innerHTML = renderAnswerHtml(answer);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
+        } catch (e) { console.error('message parse failed', e); }
+    });
+    es.addEventListener('done', ev => {
+        try {
+            const data = JSON.parse(ev.data);
+            markUsedRefs(data.usedRefIds || []);
+        } catch (_) {}
+        es.close();
+        currentEventSource = null;
+        chatSendBtn.disabled = false;
+    });
+    es.addEventListener('error', ev => {
+        try {
+            const data = ev && ev.data ? JSON.parse(ev.data) : null;
+            if (!started) bubble.innerHTML = '';
+            bubble.innerHTML += '<span style="color:#c00;">[连接异常] ' + (data && data.message ? escapeHtml(data.message) : '请稍后重试') + '</span>';
+        } catch (_) {
+            if (!started) bubble.textContent = '连接异常，请稍后重试';
         }
-    } catch (e) {
-        bubble.textContent = 'Error: ' + e.message;
-    }
-    chatSendBtn.disabled = false;
+        try { es.close(); } catch (_) {}
+        currentEventSource = null;
+        chatSendBtn.disabled = false;
+    });
 }
 
 chatSendBtn.addEventListener('click', sendChat);
 chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+// --- Chunk Modal ---
+const chunkModal = document.getElementById('chunkModal');
+const chunkModalTitle = document.getElementById('chunkModalTitle');
+const chunkModalBody = document.getElementById('chunkModalBody');
+document.getElementById('chunkModalClose').addEventListener('click', () => chunkModal.classList.remove('show'));
+chunkModal.addEventListener('click', e => { if (e.target === chunkModal) chunkModal.classList.remove('show'); });
+
+chatMessages.addEventListener('click', e => {
+    const sup = e.target.closest('sup.cite');
+    if (!sup) return;
+    const refId = sup.dataset.ref;
+    const ref = findRefByRefId(refId);
+    if (!ref) return;
+    openChunkModal(ref.chunkId, ref);
+});
+
+function renderMarkdownTable(content) {
+    if (!content) return '';
+    const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length < 2) return '<pre>' + escapeHtml(content) + '</pre>';
+    const parseRow = l => l.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+    const header = parseRow(lines[0]);
+    const bodyLines = lines.slice(2);
+    let html = '<table><thead><tr>';
+    header.forEach(h => html += '<th>' + escapeHtml(h) + '</th>');
+    html += '</tr></thead><tbody>';
+    bodyLines.forEach(bl => {
+        const cells = parseRow(bl);
+        html += '<tr>';
+        cells.forEach(c => html += '<td>' + escapeHtml(c) + '</td>');
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    return html;
+}
+
+async function openChunkModal(chunkId, refHint) {
+    if (!chunkId) return;
+    chunkModalTitle.textContent = (refHint && refHint.filename) || '引用详情';
+    chunkModalBody.innerHTML = '<div style="text-align:center;padding:30px;color:#aaa;"><span class="spinner"></span> 加载中...</div>';
+    chunkModal.classList.add('show');
+    try {
+        const res = await fetch('/pro-rag/chunk/' + encodeURIComponent(chunkId));
+        if (!res.ok) {
+            chunkModalBody.innerHTML = '<div style="color:#c00;">未找到该 chunk（可能已被清理）</div>';
+            return;
+        }
+        const data = await res.json();
+        const chunk = data.chunk || {};
+        const siblings = data.siblings || [];
+        const chunkType = (chunk.chunkType || 'TEXT').toUpperCase();
+
+        let metaHtml = '<div class="modal-meta">';
+        metaHtml += '<span>类型: ' + escapeHtml(chunkType) + '</span>';
+        if (chunk.pageNumber != null) metaHtml += '<span>页码: ' + escapeHtml(chunk.pageNumber) + '</span>';
+        if (chunk.sectionPath) metaHtml += '<span>' + escapeHtml(chunk.sectionPath) + '</span>';
+        if (chunk.chunkProfile) metaHtml += '<span>profile: ' + escapeHtml(chunk.chunkProfile) + '</span>';
+        metaHtml += '</div>';
+
+        let contentHtml = '';
+        if (chunkType === 'IMAGE' && chunk.assetUrl) {
+            contentHtml = '<img src="' + encodeURI(chunk.assetUrl) + '" alt="asset" />';
+            if (chunk.assetDescription) {
+                contentHtml += '<div style="margin-top:8px;color:#555;">' + escapeHtml(chunk.assetDescription) + '</div>';
+            }
+        } else if (chunkType === 'TABLE') {
+            contentHtml = renderMarkdownTable(chunk.content || '');
+        } else {
+            contentHtml = '<div style="white-space:pre-wrap;">' + escapeHtml(chunk.content || '') + '</div>';
+        }
+
+        let siblingsHtml = '';
+        if (siblings.length > 0) {
+            siblingsHtml += '<div class="modal-siblings"><h5>同页其它片段（' + siblings.length + '）</h5>';
+            siblings.forEach(s => {
+                siblingsHtml += '<div class="sibling">' + escapeHtml((s.content || '').slice(0, 260)) + (s.content && s.content.length > 260 ? '...' : '') + '</div>';
+            });
+            siblingsHtml += '</div>';
+        }
+
+        chunkModalBody.innerHTML = metaHtml + contentHtml + siblingsHtml;
+    } catch (e) {
+        chunkModalBody.innerHTML = '<div style="color:#c00;">加载失败: ' + escapeHtml(e.message) + '</div>';
+    }
+}
 
 // --- New Chat ---
 document.getElementById('chatNewBtn').addEventListener('click', () => {
     chatMessages.innerHTML = '<div class="empty-state" id="chatEmpty">输入问题开始对话</div>';
     chatId = generateChatId();
     document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
+    if (currentEventSource) { try { currentEventSource.close(); } catch (_) {} currentEventSource = null; }
+    renderReferences([]);
 });
 
 // --- Locate ---

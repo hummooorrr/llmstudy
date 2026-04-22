@@ -1,8 +1,10 @@
 package cn.wzw.llm.study.llmstudy.util;
 
+import cn.wzw.llm.study.llmstudy.config.RetrievalProperties;
 import cn.wzw.llm.study.llmstudy.model.EsDocumentChunk;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -26,6 +28,9 @@ public class ProRagRerankUtil {
     @Value("${pro-rag.rerank.enabled:true}")
     private boolean rerankEnabled;
 
+    @Autowired
+    private RetrievalProperties retrievalProperties;
+
     private final RestTemplate rerankRestTemplate;
 
     public ProRagRerankUtil() {
@@ -36,13 +41,35 @@ public class ProRagRerankUtil {
     }
 
     /**
+     * 融合后每个候选的完整信息：用于让上游同时拿到"LLM 可见顺序"和"docId + metadata"。
+     * 保证 references 角标与 prompt 中材料顺序 1:1 对应。
+     */
+    public record FusedChunk(
+            String docId,
+            String text,
+            Map<String, Object> metadata,
+            double score
+    ) {}
+
+    /**
      * 混合检索 + 融合：先 RRF 粗排，再 Rerank 精排
      */
     public List<String> hybridFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
                                      String query, int topK) {
+        return hybridFusionDetailed(vectorDocs, keywordDocs, query, topK).stream()
+                .map(FusedChunk::text)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 同 hybridFusion，但返回带 docId/metadata/score 的完整结构，保留融合顺序。
+     * 上游据此一次性构造 prompt contents + references，避免两者顺序/数量错位。
+     */
+    public List<FusedChunk> hybridFusionDetailed(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
+                                                 String query, int topK) {
         if (rerankEnabled) {
             try {
-                List<String> result = rerankFusion(vectorDocs, keywordDocs, query, topK);
+                List<FusedChunk> result = rerankFusionDetailed(vectorDocs, keywordDocs, query, topK);
                 if (!result.isEmpty()) {
                     return result;
                 }
@@ -51,68 +78,75 @@ public class ProRagRerankUtil {
                 log.warn("Rerank 调用失败，回退到 RRF 融合: {}", e.getMessage());
             }
         }
-        return rrfFusion(vectorDocs, keywordDocs, topK);
+        return rrfFusionDetailed(vectorDocs, keywordDocs, topK);
     }
 
     /**
      * RRF 算法融合向量检索和关键词检索结果
      */
     public List<String> rrfFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, int topK) {
-        final int K = 60;
-        Map<String, Double> rrfScores = new HashMap<>();
-        Map<String, String> idToChunkId = new HashMap<>();
+        return rrfFusionDetailed(vectorDocs, keywordDocs, topK).stream()
+                .map(FusedChunk::text)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * RRF 融合的 detailed 版本：返回排序后的 FusedChunk 列表。
+     */
+    public List<FusedChunk> rrfFusionDetailed(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, int topK) {
+        final int K = retrievalProperties.getRerank().getRrfK();
+        Map<String, Double> rrfScores = new LinkedHashMap<>();
+        Map<String, String> idToContent = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> idToMeta = new LinkedHashMap<>();
 
         for (int i = 0; i < vectorDocs.size(); i++) {
             Document doc = vectorDocs.get(i);
             String docId = doc.getId();
-            String chunkId = doc.getMetadata().getOrDefault("chunkId", "unknown").toString();
-            idToChunkId.put(docId, chunkId);
             int rank = i + 1;
             double score = 1.0 / (K + rank);
-            rrfScores.put(docId, rrfScores.getOrDefault(docId, 0.0) + score);
+            rrfScores.merge(docId, score, Double::sum);
+            idToContent.putIfAbsent(docId, doc.getText());
+            idToMeta.putIfAbsent(docId, doc.getMetadata());
         }
 
         for (int i = 0; i < keywordDocs.size(); i++) {
             EsDocumentChunk doc = keywordDocs.get(i);
             String docId = doc.getId();
-            String chunkId = doc.getMetadata().getOrDefault("chunkId", "unknown").toString();
-            idToChunkId.put(docId, chunkId);
             int rank = i + 1;
             double score = 1.0 / (K + rank);
-            rrfScores.put(docId, rrfScores.getOrDefault(docId, 0.0) + score);
+            rrfScores.merge(docId, score, Double::sum);
+            idToContent.putIfAbsent(docId, doc.getContent());
+            idToMeta.putIfAbsent(docId, doc.getMetadata());
         }
 
         List<String> sortedDocIds = rrfScores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .map(Map.Entry::getKey)
                 .limit(topK)
-                .collect(Collectors.toList());
+                .toList();
 
-        String scoresLog = sortedDocIds.stream()
-                .map(docId -> {
-                    String chunkId = idToChunkId.getOrDefault(docId, "unknown");
-                    double score = rrfScores.getOrDefault(docId, 0.0);
-                    return String.format("chunkId: %s, RRF Score: %.4f", chunkId, score);
-                })
+        List<FusedChunk> result = new ArrayList<>(sortedDocIds.size());
+        for (String docId : sortedDocIds) {
+            String text = idToContent.get(docId);
+            if (text == null) {
+                continue;
+            }
+            result.add(new FusedChunk(docId, text, idToMeta.get(docId), rrfScores.getOrDefault(docId, 0.0)));
+        }
+
+        String scoresLog = result.stream()
+                .map(c -> String.format("docId=%s, rrf=%.4f", c.docId(), c.score()))
                 .collect(Collectors.joining("; "));
-
         log.info("RRF融合后top{}结果：{}", topK, scoresLog);
 
-        Map<String, String> idToContent = new HashMap<>();
-        vectorDocs.forEach(doc -> idToContent.putIfAbsent(doc.getId(), doc.getText()));
-        keywordDocs.forEach(doc -> idToContent.putIfAbsent(doc.getId(), doc.getContent()));
-
-        return sortedDocIds.stream()
-                .map(idToContent::get)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
+        return result;
     }
 
     /**
      * RRF融合后按filePath聚合，返回文件级别的相关度排序
      */
     public List<Map<String, Object>> rrfFusionGroupByFilePath(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs) {
-        final int K = 60;
+        final int K = retrievalProperties.getRerank().getRrfK();
         Map<String, Double> filePathScores = new LinkedHashMap<>();
         Map<String, String> filePathToFilename = new LinkedHashMap<>();
         Map<String, Integer> filePathChunkCount = new LinkedHashMap<>();
@@ -168,23 +202,30 @@ public class ProRagRerankUtil {
      */
     public List<String> rerankFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
                                      String query, int topK) throws Exception {
+        return rerankFusionDetailed(vectorDocs, keywordDocs, query, topK).stream()
+                .map(FusedChunk::text)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 智谱 rerank 的 detailed 版本：用入参索引回溯 docId，保证 prompt 顺序和 references 一致。
+     */
+    public List<FusedChunk> rerankFusionDetailed(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
+                                                 String query, int topK) throws Exception {
         Map<String, String> idToContent = new LinkedHashMap<>();
-        Map<String, String> idToChunkId = new HashMap<>();
+        Map<String, Map<String, Object>> idToMeta = new LinkedHashMap<>();
 
         vectorDocs.forEach(doc -> {
-            String docId = doc.getId();
-            idToContent.putIfAbsent(docId, doc.getText());
-            String chunkId = doc.getMetadata().getOrDefault("chunkId", docId).toString();
-            idToChunkId.putIfAbsent(docId, chunkId);
+            idToContent.putIfAbsent(doc.getId(), doc.getText());
+            idToMeta.putIfAbsent(doc.getId(), doc.getMetadata());
         });
 
         keywordDocs.forEach(doc -> {
-            String docId = doc.getId();
-            idToContent.putIfAbsent(docId, doc.getContent());
-            String chunkId = doc.getMetadata().getOrDefault("chunkId", docId).toString();
-            idToChunkId.putIfAbsent(docId, chunkId);
+            idToContent.putIfAbsent(doc.getId(), doc.getContent());
+            idToMeta.putIfAbsent(doc.getId(), doc.getMetadata());
         });
 
+        List<String> orderedIds = new ArrayList<>(idToContent.keySet());
         List<String> documents = new ArrayList<>(idToContent.values());
         if (documents.isEmpty()) {
             log.info("没有检索到任何文档，无需重排序");
@@ -222,35 +263,54 @@ public class ProRagRerankUtil {
             return Collections.emptyList();
         }
 
-        List<String> result = new ArrayList<>();
+        List<FusedChunk> result = new ArrayList<>();
         List<String> rankLogs = new ArrayList<>();
 
-        for (int i = 0; i < rerankedResults.size(); i++) {
-            Map<String, Object> item = rerankedResults.get(i);
-            Double score = item.containsKey("relevance_score")
+        for (int rank = 0; rank < rerankedResults.size(); rank++) {
+            Map<String, Object> item = rerankedResults.get(rank);
+            double score = item.containsKey("relevance_score")
                     ? ((Number) item.get("relevance_score")).doubleValue()
                     : 0.0;
-            String text = (String) item.get("document");
 
-            if (text != null) {
-                result.add(text);
-
-                String matchedChunkId = "unknown";
-                for (Map.Entry<String, String> entry : idToContent.entrySet()) {
-                    if (entry.getValue().equals(text)) {
-                        matchedChunkId = idToChunkId.getOrDefault(entry.getKey(), "unknown");
-                        break;
-                    }
-                }
-
-                rankLogs.add(String.format("排名 %d: chunkId=%s, 分数=%.4f",
-                        i + 1, matchedChunkId, score));
+            String docId = resolveRerankDocId(item, orderedIds, idToContent);
+            if (docId == null) {
+                continue;
             }
+
+            String text = idToContent.get(docId);
+            if (text == null) {
+                continue;
+            }
+            result.add(new FusedChunk(docId, text, idToMeta.get(docId), score));
+            rankLogs.add(String.format("排名 %d: docId=%s, 分数=%.4f", rank + 1, docId, score));
         }
 
         log.info("智谱rerank重排序结果：{}", String.join("; ", rankLogs));
         log.info("重排序后返回{}条文档，原始合并{}条", result.size(), documents.size());
 
         return result;
+    }
+
+    /**
+     * 优先按 API 返回的 index 字段回溯 docId（最稳），失败才按内容精确匹配兜底。
+     */
+    private String resolveRerankDocId(Map<String, Object> rerankItem, List<String> orderedIds,
+                                      Map<String, String> idToContent) {
+        Object idxValue = rerankItem.get("index");
+        if (idxValue instanceof Number numIdx) {
+            int i = numIdx.intValue();
+            if (i >= 0 && i < orderedIds.size()) {
+                return orderedIds.get(i);
+            }
+        }
+        Object docValue = rerankItem.get("document");
+        if (docValue instanceof String text) {
+            for (Map.Entry<String, String> entry : idToContent.entrySet()) {
+                if (entry.getValue().equals(text)) {
+                    return entry.getKey();
+                }
+            }
+        }
+        return null;
     }
 }

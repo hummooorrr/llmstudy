@@ -50,3 +50,58 @@ pro-rag:
     dry-run: ${PRO_RAG_CLEANUP_DRY_RUN:false}
   rerank:
     enabled: ${PRO_RAG_RERANK_ENABLED:true}
+  # 分块参数配置：default 为兜底，profiles 按文件类型/业务场景覆盖
+  chunking:
+    default:
+      strategy: overlap-paragraph
+      chunk-size: 400
+      overlap: 100
+    profiles:
+      markdown:
+        strategy: markdown-header
+        headers:
+          - "# "
+          - "## "
+          - "### "
+        strip-headings: false
+        parent-child-model: true
+      word:
+        strategy: word-header
+        heading-levels: [ 1, 2, 3 ]
+        chunk-size: 500
+        overlap: 100
+        parent-child-model: true
+      pdf-text:
+        strategy: overlap-paragraph
+        chunk-size: 400
+        overlap: 100
+      pdf-scanned:
+        strategy: overlap-paragraph
+        chunk-size: 600
+        overlap: 150
+      image:
+        strategy: overlap-paragraph
+        chunk-size: 800
+        overlap: 0
+  # 检索 / 融合 / 重排参数
+  # 注意：rerank.final-top-k 同时作为 prompt 里材料数和前端 reference 卡片数（保证 1:1 对应）
+  retrieval:
+    vector-top-k: 10
+    keyword-top-k: 5
+    similarity-threshold: 0.35
+    max-rewrite-queries: 3
+    directive-vector-top-k: 8
+    directive-similarity-threshold: 0.20
+    locate:
+      vector-top-k: 10
+      keyword-top-k: 6
+      similarity-threshold: 0.35
+      snippet-limit: 3
+    rerank:
+      rrf-k: 60
+      final-top-k: 6
+  # 文档解析开关（表格/图片结构化、VL 限流）
+  parsing:
+    structured-enabled: ${PRO_RAG_STRUCTURED_PARSE_ENABLED:true}
+    max-images-per-doc: ${PRO_RAG_MAX_IMAGES_PER_DOC:20}
+    min-image-dimension: 80

@@ -1,10 +1,12 @@
 package cn.wzw.llm.study.llmstudy.service;
 
+import cn.wzw.llm.study.llmstudy.config.RetrievalProperties;
 import cn.wzw.llm.study.llmstudy.dto.locate.LocateHitSnippet;
 import cn.wzw.llm.study.llmstudy.dto.locate.LocateResultItem;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.GenerationReferenceBundle;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.QueryBundle;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.ReferenceMaterial;
+import cn.wzw.llm.study.llmstudy.model.ChunkMetadataKeys;
 import cn.wzw.llm.study.llmstudy.model.EsDocumentChunk;
 import cn.wzw.llm.study.llmstudy.util.ProRagRerankUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -32,10 +34,6 @@ import java.util.Objects;
 @Slf4j
 public class ProRagRetrievalService {
 
-    private static final int MAX_REWRITE_QUERIES = 3;
-    private static final int RRF_K = 60;
-    private static final int LOCATE_SNIPPET_LIMIT = 3;
-
     @Autowired
     private VectorStore vectorStore;
 
@@ -48,10 +46,15 @@ public class ProRagRetrievalService {
     @Autowired
     private ProRagRerankUtil proRagRerankUtil;
 
+    @Autowired
+    private RetrievalProperties retrievalProperties;
+
     public List<LocateResultItem> locateFiles(String query) throws Exception {
         QueryBundle bundle = buildQueries(query);
-        List<SearchHit> vectorHits = searchVectorHits(bundle.vectorQueries(), null, 10, 0.35);
-        List<SearchHit> keywordHits = searchKeywordHits(bundle.keywordQueries(), 6);
+        RetrievalProperties.Locate locateCfg = retrievalProperties.getLocate();
+        List<SearchHit> vectorHits = searchVectorHits(bundle.vectorQueries(), null,
+                locateCfg.getVectorTopK(), locateCfg.getSimilarityThreshold());
+        List<SearchHit> keywordHits = searchKeywordHits(bundle.keywordQueries(), locateCfg.getKeywordTopK());
 
         Map<String, FileLocateAccumulator> groupedFiles = new LinkedHashMap<>();
         vectorHits.forEach(hit -> groupedFiles
@@ -69,49 +72,60 @@ public class ProRagRetrievalService {
 
     public GenerationReferenceBundle retrieveReferenceBundle(String query, String directiveFilename) throws Exception {
         QueryBundle bundle = buildQueries(query);
-        List<Document> vectorDocs = searchVector(bundle.vectorQueries(), null, 10, 0.35);
-        List<EsDocumentChunk> keywordDocs = searchKeyword(bundle.keywordQueries(), 5);
+        List<Document> vectorDocs = searchVector(bundle.vectorQueries(), null,
+                retrievalProperties.getVectorTopK(), retrievalProperties.getSimilarityThreshold());
+        List<EsDocumentChunk> keywordDocs = searchKeyword(bundle.keywordQueries(), retrievalProperties.getKeywordTopK());
 
         if (StringUtils.hasText(directiveFilename)) {
             List<Document> directiveDocs = searchVector(
                     List.of(query),
                     directiveFilename.trim(),
-                    8,
-                    0.20
+                    retrievalProperties.getDirectiveVectorTopK(),
+                    retrievalProperties.getDirectiveSimilarityThreshold()
             );
             mergeVectorDocs(vectorDocs, directiveDocs);
         }
 
-        List<String> contents = proRagRerankUtil.hybridFusion(vectorDocs, keywordDocs, bundle.originalQuery(), 8);
-        List<ReferenceMaterial> referenceMaterials = buildReferenceMaterials(vectorDocs, keywordDocs, bundle.originalQuery());
+        // 用 detailed 版本一次性拿到"融合后的顺序 + docId + metadata"，
+        // 保证 contents 与 referenceMaterials 的条目数、排序严格一致，LLM 输出的 [^cN] 永远能命中前端卡片。
+        int finalTopK = retrievalProperties.getRerank().getFinalTopK();
+        List<ProRagRerankUtil.FusedChunk> fused = proRagRerankUtil.hybridFusionDetailed(
+                vectorDocs, keywordDocs, bundle.originalQuery(), finalTopK);
+
+        List<String> contents = new ArrayList<>(fused.size());
+        List<ReferenceMaterial> referenceMaterials = new ArrayList<>(fused.size());
+        int refIdx = 1;
+        for (ProRagRerankUtil.FusedChunk chunk : fused) {
+            contents.add(chunk.text());
+            referenceMaterials.add(buildReferenceMaterial(chunk, refIdx, bundle.originalQuery()));
+            refIdx++;
+        }
         return new GenerationReferenceBundle(contents, referenceMaterials);
     }
 
-    private List<ReferenceMaterial> buildReferenceMaterials(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, String originalQuery) {
-        Map<String, ReferenceMaterial> materials = new LinkedHashMap<>();
-
-        vectorDocs.forEach(doc -> {
-            String filePath = metadataValue(doc.getMetadata(), "filePath", "unknown");
-            String filename = metadataValue(doc.getMetadata(), "filename", "unknown");
-            materials.putIfAbsent(filePath, new ReferenceMaterial(
-                    filePath,
-                    filename,
-                    extractSnippet(doc.getText(), originalQuery)
-            ));
-        });
-
-        keywordDocs.forEach(doc -> {
-            Map<String, Object> metadata = doc.getMetadata();
-            String filePath = metadataValue(metadata, "filePath", "unknown");
-            String filename = metadataValue(metadata, "filename", "unknown");
-            materials.putIfAbsent(filePath, new ReferenceMaterial(
-                    filePath,
-                    filename,
-                    extractSnippet(doc.getContent(), originalQuery)
-            ));
-        });
-
-        return new ArrayList<>(materials.values()).stream().limit(6).toList();
+    private ReferenceMaterial buildReferenceMaterial(ProRagRerankUtil.FusedChunk chunk, int refIdx, String originalQuery) {
+        Map<String, Object> metadata = chunk.metadata();
+        String filePath = metadataValue(metadata, ChunkMetadataKeys.FILE_PATH, "unknown");
+        String filename = metadataValue(metadata, ChunkMetadataKeys.FILENAME, "unknown");
+        String chunkType = metadataValue(metadata, ChunkMetadataKeys.CHUNK_TYPE, "TEXT");
+        Integer pageNumber = metadataInt(metadata, ChunkMetadataKeys.PAGE_NUMBER);
+        String sectionPath = metadataOptional(metadata, ChunkMetadataKeys.SECTION_PATH);
+        if (!StringUtils.hasText(sectionPath)) {
+            sectionPath = resolveHeading(metadata);
+        }
+        String assetPath = metadataOptional(metadata, ChunkMetadataKeys.ASSET_PATH);
+        return new ReferenceMaterial(
+                "c" + refIdx,
+                chunk.docId(),
+                filePath,
+                filename,
+                extractSnippet(chunk.text(), originalQuery),
+                Math.round(chunk.score() * 10000.0) / 10000.0,
+                chunkType,
+                pageNumber,
+                sectionPath,
+                assetPath
+        );
     }
 
     private QueryBundle buildQueries(String query) {
@@ -137,7 +151,7 @@ public class ProRagRetrievalService {
                         routeResult.subQueries().stream()
                                 .filter(StringUtils::hasText)
                                 .map(String::trim)
-                                .limit(MAX_REWRITE_QUERIES)
+                                .limit(retrievalProperties.getMaxRewriteQueries())
                                 .forEach(queries::add);
                     }
                     List<String> queryList = new ArrayList<>(queries);
@@ -206,8 +220,8 @@ public class ProRagRetrievalService {
                 Document doc = docs.get(i);
                 hits.add(new SearchHit(
                         doc.getId(),
-                        metadataValue(doc.getMetadata(), "filePath", "unknown"),
-                        metadataValue(doc.getMetadata(), "filename", "unknown"),
+                        metadataValue(doc.getMetadata(), ChunkMetadataKeys.FILE_PATH, "unknown"),
+                        metadataValue(doc.getMetadata(), ChunkMetadataKeys.FILENAME, "unknown"),
                         doc.getText(),
                         "semantic",
                         query,
@@ -231,8 +245,8 @@ public class ProRagRetrievalService {
                 Map<String, Object> metadata = doc.getMetadata();
                 hits.add(new SearchHit(
                         doc.getId(),
-                        metadataValue(metadata, "filePath", "unknown"),
-                        metadataValue(metadata, "filename", "unknown"),
+                        metadataValue(metadata, ChunkMetadataKeys.FILE_PATH, "unknown"),
+                        metadataValue(metadata, ChunkMetadataKeys.FILENAME, "unknown"),
                         doc.getContent(),
                         "keyword",
                         query,
@@ -310,6 +324,32 @@ public class ProRagRetrievalService {
         return value == null ? defaultValue : value.toString();
     }
 
+    private String metadataOptional(Map<String, Object> metadata, String key) {
+        if (metadata == null) {
+            return null;
+        }
+        Object value = metadata.get(key);
+        return value == null ? null : value.toString();
+    }
+
+    private Integer metadataInt(Map<String, Object> metadata, String key) {
+        if (metadata == null) {
+            return null;
+        }
+        Object value = metadata.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return Integer.parseInt(value.toString());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
     private String resolveHeading(Map<String, Object> metadata) {
         if (metadata == null) {
             return "";
@@ -343,8 +383,8 @@ public class ProRagRetrievalService {
             int rank,
             Map<String, Object> metadata
     ) {
-        double score() {
-            return 1.0 / (RRF_K + rank);
+        double score(int rrfK) {
+            return 1.0 / (rrfK + rank);
         }
     }
 
@@ -365,7 +405,8 @@ public class ProRagRetrievalService {
         }
 
         private void addHit(SearchHit hit) {
-            score += hit.score();
+            int rrfK = retrievalProperties.getRerank().getRrfK();
+            score += hit.score(rrfK);
             chunkIds.add(hit.id());
             if (StringUtils.hasText(hit.matchedQuery())) {
                 matchedQueries.add(hit.matchedQuery());
@@ -408,7 +449,7 @@ public class ProRagRetrievalService {
         }
 
         private LocateResultItem toResult() {
-            List<LocateHitSnippet> snippets = hitSnippets.stream().limit(LOCATE_SNIPPET_LIMIT).toList();
+            List<LocateHitSnippet> snippets = hitSnippets.stream().limit(retrievalProperties.getLocate().getSnippetLimit()).toList();
             return new LocateResultItem(
                     filePath,
                     filename,
