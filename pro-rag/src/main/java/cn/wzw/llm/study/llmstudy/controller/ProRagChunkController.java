@@ -3,6 +3,7 @@ package cn.wzw.llm.study.llmstudy.controller;
 import cn.wzw.llm.study.llmstudy.model.ChunkMetadataKeys;
 import cn.wzw.llm.study.llmstudy.model.EsDocumentChunk;
 import cn.wzw.llm.study.llmstudy.service.ProRagElasticSearchService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
@@ -24,6 +25,7 @@ import java.util.Optional;
 /**
  * 引用详情接口：前端点击 citation 角标时调用，返回 chunk 全文 + 邻居上下文 + asset URL。
  */
+@Slf4j
 @RestController
 @RequestMapping("/pro-rag/chunk")
 public class ProRagChunkController {
@@ -39,10 +41,10 @@ public class ProRagChunkController {
             @RequestParam(value = "excerpt", required = false) String excerpt,
             @RequestParam(value = "sectionPath", required = false) String sectionPath,
             @RequestParam(value = "chunkType", required = false) String chunkType
-    ) throws Exception {
-        Optional<EsDocumentChunk> chunkOpt = proRagElasticSearchService.findById(chunkId);
+    ) {
+        Optional<EsDocumentChunk> chunkOpt = safeFindById(chunkId);
         if (chunkOpt.isEmpty()) {
-            chunkOpt = resolveByHint(chunkId, requestFilename, requestPageNumber, excerpt, sectionPath, chunkType);
+            chunkOpt = safeResolveByHint(chunkId, requestFilename, requestPageNumber, excerpt, sectionPath, chunkType);
         }
         if (chunkOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -81,6 +83,25 @@ public class ProRagChunkController {
             view.put("assetUrl", "/pro-rag/asset/" + assetPath);
         }
         return view;
+    }
+
+    private Optional<EsDocumentChunk> safeFindById(String chunkId) {
+        try {
+            return proRagElasticSearchService.findById(chunkId);
+        } catch (Exception e) {
+            log.warn("按 _id 查询 chunk 失败：chunkId={}, msg={}", chunkId, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private Optional<EsDocumentChunk> safeResolveByHint(String chunkId, String filename, Integer pageNumber,
+                                                       String excerpt, String sectionPath, String chunkType) {
+        try {
+            return resolveByHint(chunkId, filename, pageNumber, excerpt, sectionPath, chunkType);
+        } catch (Exception e) {
+            log.warn("按元数据提示回查 chunk 失败：chunkId={}, filename={}, msg={}", chunkId, filename, e.getMessage());
+            return Optional.empty();
+        }
     }
 
     private Optional<EsDocumentChunk> resolveByHint(String chunkId, String filename, Integer pageNumber, String excerpt,

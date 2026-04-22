@@ -300,7 +300,12 @@ public class ProRagElasticSearchService {
                 }
                 return bool;
             }));
-            b.sort(s -> s.field(f -> f.field("metadata.pageNumber").order(SortOrder.Asc)));
+            // 没有 pageNumber 字段的场景（如 Markdown），声明 unmappedType 避免触发 all shards failed
+            b.sort(s -> s.field(f -> f
+                    .field("metadata.pageNumber")
+                    .order(SortOrder.Asc)
+                    .unmappedType(co.elastic.clients.elasticsearch._types.mapping.FieldType.Integer)
+            ));
             return b;
         });
 
@@ -322,7 +327,7 @@ public class ProRagElasticSearchService {
      * 为当前 chunk 找更精确的上下文片段。
      * 优先同页/同章节/父子关系命中，拿不到足够线索时宁缺毋滥，避免展示同文件里的无关片段。
      */
-    public List<EsDocumentChunk> findSiblings(EsDocumentChunk target, int limit) throws Exception {
+    public List<EsDocumentChunk> findSiblings(EsDocumentChunk target, int limit) {
         if (target == null || limit <= 0) {
             return List.of();
         }
@@ -333,7 +338,13 @@ public class ProRagElasticSearchService {
         }
 
         int candidateLimit = pageNumber != null ? Math.max(limit * 12, 60) : Math.max(limit * 20, 200);
-        List<EsDocumentChunk> candidates = findCandidates(filename, pageNumber, candidateLimit);
+        List<EsDocumentChunk> candidates;
+        try {
+            candidates = findCandidates(filename, pageNumber, candidateLimit);
+        } catch (Exception e) {
+            log.warn("查询同级 chunk 失败，降级返回空：filename={}, page={}, msg={}", filename, pageNumber, e.getMessage());
+            return List.of();
+        }
         if (candidates.isEmpty()) {
             return List.of();
         }
