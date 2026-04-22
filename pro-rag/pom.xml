@@ -85,6 +85,16 @@
             <artifactId>spring-ai-autoconfigure-model-chat-memory</artifactId>
         </dependency>
 
+        <!-- 对话记忆持久化：存到 MySQL（见 ChatMemoryDataSourceConfig） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
             <artifactId>spring-ai-alibaba-starter-mcp-gateway</artifactId>

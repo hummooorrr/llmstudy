@@ -14,6 +14,8 @@ public record GeneratedFileResult(
         String outputFilePath,
         String previewContent,
         List<ReferenceMaterial> referenceMaterials,
-        UploadedDocumentResult directiveFile
+        UploadedDocumentResult directiveFile,
+        String chatId,
+        int version
 ) {
 }

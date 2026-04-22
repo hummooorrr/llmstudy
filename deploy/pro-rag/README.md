@@ -6,6 +6,7 @@
 - `app`：`pro-rag` Spring Boot 服务
 - `postgres`：`pgvector` 向量库
 - `elasticsearch`：关键词检索
+- `mysql`：对话记忆 / 会话元信息持久化（RAG 对话和文档生成的多轮历史全部落库，重启、刷新都不丢）
 
 ## 1. 上传到服务器
 
@@ -22,10 +23,12 @@ cp .env.example .env
 vim .env
 ```
 
-至少改这两个值：
+至少改这些值：
 
 - `ZHIPU_API_KEY`
 - `PG_PASSWORD`
+- `MYSQL_ROOT_PASSWORD`
+- `MYSQL_PASSWORD`
 
 常用模型相关配置也建议一并确认：
 
@@ -80,6 +83,7 @@ docker compose ps
 docker compose logs -f app
 docker compose logs -f nginx
 docker compose logs -f postgres
+docker compose logs -f mysql
 docker compose logs -f elasticsearch
 ```
 
@@ -158,7 +162,38 @@ curl -u USER:PASS -X POST \
 
 修改 `.env` 后只需 `docker compose restart app` 生效。
 
-## 9. 上线前建议
+## 9. 对话记忆相关运维
+
+对话记忆全部落在 MySQL 两张表：
+
+- `pro_rag_chat_message`：每条 user / assistant 消息
+- `pro_rag_conversation`：会话元信息（scope、title、message_count、updated_at）
+
+清空历史：
+
+```bash
+# 进入 mysql 容器
+docker compose exec mysql mysql -u root -p"$MYSQL_ROOT_PASSWORD" pro_rag
+
+# 只清空"文档生成"作用域的历史
+DELETE m FROM pro_rag_chat_message m
+  JOIN pro_rag_conversation c ON c.conversation_id = m.conversation_id
+  WHERE c.scope = 'GENERATE';
+DELETE FROM pro_rag_conversation WHERE scope = 'GENERATE';
+
+# 全部清空
+TRUNCATE TABLE pro_rag_chat_message;
+TRUNCATE TABLE pro_rag_conversation;
+```
+
+备份：
+
+```bash
+docker compose exec mysql mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" pro_rag \
+  > pro_rag_memory_$(date +%Y%m%d).sql
+```
+
+## 10. 上线前建议
 
 这套配置可以先直接跑起来，但正式长期使用前建议再补两件事：
 

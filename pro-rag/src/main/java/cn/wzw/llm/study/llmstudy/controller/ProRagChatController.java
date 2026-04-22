@@ -4,6 +4,8 @@ import cn.wzw.llm.study.llmstudy.config.DomainPromptConfig;
 import cn.wzw.llm.study.llmstudy.config.ProRagConfiguration;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.GenerationReferenceBundle;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.ReferenceMaterial;
+import cn.wzw.llm.study.llmstudy.memory.ConversationMetaService;
+import cn.wzw.llm.study.llmstudy.memory.ConversationScope;
 import cn.wzw.llm.study.llmstudy.service.ProRagRetrievalService;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.ai.chat.client.ChatClient;
@@ -46,6 +48,9 @@ public class ProRagChatController {
     @Autowired
     private DomainPromptConfig domainPromptConfig;
 
+    @Autowired
+    private ConversationMetaService conversationMetaService;
+
     /**
      * 兼容接口：旧前端仍可通过原始 /pro-rag/chat 获取纯文本流。
      */
@@ -57,15 +62,18 @@ public class ProRagChatController {
             HttpServletResponse response
     ) throws Exception {
         response.setCharacterEncoding("UTF-8");
+        String normalizedChatId = normalizeChatId(chatId);
+        conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message);
         GenerationReferenceBundle bundle = proRagRetrievalService.retrieveReferenceBundle(message, null);
         String userMessage = buildUserMessage(domain, message, bundle);
 
         ChatClient chatChatClient = proRagConfiguration.getChatChatClient();
         return chatChatClient.prompt()
                 .user(userMessage)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, normalizedChatId))
                 .stream()
-                .content();
+                .content()
+                .doOnComplete(() -> conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message));
     }
 
     /**
@@ -77,6 +85,8 @@ public class ProRagChatController {
             @RequestParam("chatId") String chatId,
             @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) {
+        String normalizedChatId = normalizeChatId(chatId);
+        conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message);
         GenerationReferenceBundle bundle;
         try {
             bundle = proRagRetrievalService.retrieveReferenceBundle(message, null);
@@ -95,7 +105,7 @@ public class ProRagChatController {
 
         Flux<ServerSentEvent<Object>> messageFlux = chatChatClient.prompt()
                 .user(userMessage)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, normalizedChatId))
                 .stream()
                 .content()
                 .map(delta -> {
@@ -104,18 +114,35 @@ public class ProRagChatController {
                 });
 
         Flux<ServerSentEvent<Object>> referencesFlux = Flux.just(
-                sseEvent("references", Map.of("items", references, "chatId", chatId))
+                sseEvent("references", Map.of("items", references, "chatId", normalizedChatId))
         );
 
         Flux<ServerSentEvent<Object>> doneFlux = Mono.fromSupplier(() -> {
             List<String> usedRefIds = extractUsedRefIds(answerBuffer.toString(), references);
+            // 流式结束后 touch 一次，同步最新 updated_at / message_count
+            conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("usedRefIds", usedRefIds);
             payload.put("totalRefs", references.size());
+            payload.put("chatId", normalizedChatId);
             return sseEvent("done", payload);
         }).flux();
 
         return Flux.concat(referencesFlux, messageFlux, doneFlux);
+    }
+
+    /**
+     * 统一 chatId：如果前端没带 scope 前缀，自动补 chat-，保证这条会话落在 CHAT 作用域下。
+     */
+    private String normalizeChatId(String chatId) {
+        if (!StringUtils.hasText(chatId)) {
+            throw new IllegalArgumentException("chatId 不能为空");
+        }
+        String trimmed = chatId.trim();
+        if (trimmed.startsWith("chat-") || trimmed.startsWith("gen-")) {
+            return trimmed;
+        }
+        return "chat-" + trimmed;
     }
 
     private String buildUserMessage(String domain, String userQuestion, GenerationReferenceBundle bundle) {
