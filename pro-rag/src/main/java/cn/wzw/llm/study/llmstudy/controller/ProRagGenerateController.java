@@ -6,6 +6,8 @@ import cn.wzw.llm.study.llmstudy.dto.generate.GeneratedFileResult;
 import cn.wzw.llm.study.llmstudy.dto.ingestion.UploadedDocumentResult;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.GenerationReferenceBundle;
 import cn.wzw.llm.study.llmstudy.dto.retrieval.ReferenceMaterial;
+import cn.wzw.llm.study.llmstudy.memory.ConversationMetaService;
+import cn.wzw.llm.study.llmstudy.memory.ConversationScope;
 import cn.wzw.llm.study.llmstudy.output.DocumentOutputFormat;
 import cn.wzw.llm.study.llmstudy.output.DocumentTemplateContext;
 import cn.wzw.llm.study.llmstudy.output.ProRagTemplateOutputService;
@@ -64,6 +66,9 @@ public class ProRagGenerateController {
     @Autowired
     private DomainPromptConfig domainPromptConfig;
 
+    @Autowired
+    private ConversationMetaService conversationMetaService;
+
     @Value("${pro-rag.generated-dir:./pro-rag-generated}")
     private String generatedDir;
 
@@ -77,14 +82,17 @@ public class ProRagGenerateController {
             @RequestParam(value = "directiveFilename", required = false) String directiveFilename,
             @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) throws Exception {
+        String normalizedChatId = normalizeChatId(chatId);
+        conversationMetaService.touch(normalizedChatId, ConversationScope.GENERATE, domain, instruction);
         GenerationReferenceBundle referenceBundle = proRagRetrievalService.retrieveReferenceBundle(instruction, directiveFilename);
         String userMessage = buildUserMessage(instruction, referenceBundle, domain);
         ChatClient generateChatClient = proRagConfiguration.getGenerateChatClient();
         return generateChatClient.prompt()
                 .user(userMessage)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, normalizedChatId))
                 .stream()
-                .content();
+                .content()
+                .doOnComplete(() -> conversationMetaService.touch(normalizedChatId, ConversationScope.GENERATE, domain, instruction));
     }
 
     /**
@@ -102,7 +110,7 @@ public class ProRagGenerateController {
             @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) throws Exception {
         return createGeneratedFile(
-                chatId, instruction, directiveFilename,
+                normalizeChatId(chatId), instruction, directiveFilename,
                 outputFilename, outputFormat, templateName, documentTitle,
                 null, domain
         );
@@ -124,10 +132,24 @@ public class ProRagGenerateController {
     ) throws Exception {
         UploadedDocumentResult uploadResult = proRagDocumentIngestionService.upload(file);
         return createGeneratedFile(
-                chatId, instruction, uploadResult.storedFilename(),
+                normalizeChatId(chatId), instruction, uploadResult.storedFilename(),
                 outputFilename, outputFormat, templateName, documentTitle,
                 uploadResult, domain
         );
+    }
+
+    /**
+     * 为文档生成场景统一 chatId：前端没带 scope 前缀时自动补 gen-。
+     */
+    private String normalizeChatId(String chatId) {
+        if (!StringUtils.hasText(chatId)) {
+            throw new IllegalArgumentException("chatId 不能为空");
+        }
+        String trimmed = chatId.trim();
+        if (trimmed.startsWith("chat-") || trimmed.startsWith("gen-")) {
+            return trimmed;
+        }
+        return "gen-" + trimmed;
     }
 
     /**
@@ -168,6 +190,7 @@ public class ProRagGenerateController {
             UploadedDocumentResult directiveFile,
             String domain
     ) throws Exception {
+        conversationMetaService.touch(chatId, ConversationScope.GENERATE, domain, instruction);
         GenerationReferenceBundle referenceBundle = proRagRetrievalService.retrieveReferenceBundle(instruction, directiveFilename);
         String generatedBody = generateContent(chatId, instruction, referenceBundle, domain);
         DocumentOutputFormat documentOutputFormat = DocumentOutputFormat.from(outputFormat);
@@ -185,6 +208,11 @@ public class ProRagGenerateController {
                 outputFilename
         );
 
+        // 用真实消息数 / 2 近似成"版本号"（每轮 user+assistant 算一版，1-based）
+        conversationMetaService.touch(chatId, ConversationScope.GENERATE, domain, instruction);
+        int messageCount = conversationMetaService.countMessages(chatId);
+        int version = Math.max(1, (int) Math.ceil(messageCount / 2.0));
+
         return new GeneratedFileResult(
                 "success",
                 rendered.templateName(),
@@ -194,7 +222,9 @@ public class ProRagGenerateController {
                 rendered.outputFilePath(),
                 rendered.previewContent(),
                 referenceBundle.referenceMaterials(),
-                directiveFile
+                directiveFile,
+                chatId,
+                version
         );
     }
 

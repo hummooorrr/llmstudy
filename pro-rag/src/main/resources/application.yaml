@@ -3,6 +3,7 @@ spring:
     name: pro-rag
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
+  # 主 datasource 给 pgvector 用
   datasource:
     url: ${PG_URL:jdbc:postgresql://localhost:5433/rag_test}
     username: ${PG_USERNAME:pgvector}
@@ -55,6 +56,22 @@ pro-rag:
     dry-run: ${PRO_RAG_CLEANUP_DRY_RUN:false}
   rerank:
     enabled: ${PRO_RAG_RERANK_ENABLED:true}
+  # 对话/生成记忆（持久化到 MySQL）
+  chat-memory:
+    # 对话 scope 保留多少条历史消息（1 条 = 1 个 user / assistant 消息）
+    chat-window: ${PRO_RAG_CHAT_MEMORY_WINDOW:30}
+    # 文档生成 scope 保留多少条历史消息（需要放得大一些，每一轮 assistant 往往是完整文档）
+    generate-window: ${PRO_RAG_GENERATE_MEMORY_WINDOW:30}
+    # 对话列表默认返回最近多少条
+    list-limit: ${PRO_RAG_CHAT_MEMORY_LIST_LIMIT:200}
+    # MySQL 连接（独立于主 datasource）
+    datasource:
+      url: ${MYSQL_URL:jdbc:mysql://localhost:3306/pro_rag?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true}
+      username: ${MYSQL_USERNAME:root}
+      password: ${MYSQL_PASSWORD:root}
+      driver-class-name: com.mysql.cj.jdbc.Driver
+    # 启动时是否自动建表
+    initialize-schema: ${PRO_RAG_CHAT_MEMORY_INIT_SCHEMA:true}
   # 分块参数配置：default 为兜底，profiles 按文件类型/业务场景覆盖
   chunking:
     default:

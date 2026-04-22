@@ -1,32 +1,40 @@
 package cn.wzw.llm.study.llmstudy.config;
 
+import cn.wzw.llm.study.llmstudy.memory.JdbcChatMemoryStore;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * ChatClient 配置
- * 为文档生成和通用问答分别创建带对话记忆的 ChatClient 实例
+ * 为文档生成和通用问答分别创建带"持久化对话记忆"的 ChatClient 实例。
+ * 记忆存储到 MySQL，由 {@link JdbcChatMemoryStore} 实现，重启不丢，支持回看和切换旧会话。
  */
 @Configuration
 public class ProRagConfiguration {
 
-    @Autowired
-    private ChatModel chatModel;
+    private final ChatModel chatModel;
+    private final ChatMemory chatChatMemory;
+    private final ChatMemory generateChatMemory;
 
-    /**
-     * 文档生成用 ChatClient，记忆窗口20条
-     */
     private ChatClient generateChatClient;
-
-    /**
-     * 通用问答用 ChatClient，记忆窗口10条
-     */
     private ChatClient chatChatClient;
+
+    public ProRagConfiguration(
+            ChatModel chatModel,
+            @Qualifier("chatMemoryJdbcTemplate") JdbcTemplate chatMemoryJdbcTemplate,
+            @Value("${pro-rag.chat-memory.chat-window:30}") int chatWindow,
+            @Value("${pro-rag.chat-memory.generate-window:30}") int generateWindow) {
+        this.chatModel = chatModel;
+        this.chatChatMemory = new JdbcChatMemoryStore(chatMemoryJdbcTemplate, chatWindow);
+        this.generateChatMemory = new JdbcChatMemoryStore(chatMemoryJdbcTemplate, generateWindow);
+        initChatClients();
+    }
 
     public ChatClient getGenerateChatClient() {
         return generateChatClient;
@@ -36,21 +44,13 @@ public class ProRagConfiguration {
         return chatChatClient;
     }
 
-    /**
-     * 初始化 ChatClient 实例
-     */
-    @Autowired
-    public void initChatClients() {
-        // 文档生成：更大的记忆窗口，保留更多轮次
-        ChatMemory generateMemory = MessageWindowChatMemory.builder().maxMessages(20).build();
+    private void initChatClients() {
         this.generateChatClient = ChatClient.builder(chatModel)
-                .defaultAdvisors(MessageChatMemoryAdvisor.builder(generateMemory).build())
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(generateChatMemory).build())
                 .build();
 
-        // 通用问答：标准记忆窗口
-        ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(10).build();
         this.chatChatClient = ChatClient.builder(chatModel)
-                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatChatMemory).build())
                 .build();
     }
 }

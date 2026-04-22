@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#6366f1">
     <title>Pro-RAG</title>
     <style>
         :root {
@@ -66,7 +67,10 @@
             background-attachment: fixed;
             color: var(--ink);
             min-height: 100vh;
+            min-height: 100dvh;
             -webkit-font-smoothing: antialiased;
+            -webkit-text-size-adjust: 100%;
+            text-size-adjust: 100%;
             font-feature-settings: "cv11", "ss01";
         }
         input, select, button { font-family: inherit; }
@@ -158,7 +162,38 @@
         }
         .header > .sub-meta #chatIdDisplay { color: var(--ink-soft); font-weight: 600; font-variant-numeric: tabular-nums; }
 
-        .domain-tags { display: flex; gap: 6px; margin-left: auto; padding: 4px; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-sm); }
+        .domain-bar {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            margin-left: auto;
+            padding: 4px 4px 4px 12px;
+            background: linear-gradient(180deg, #fafaff 0%, #ffffff 100%);
+            border: 1px solid var(--line-accent);
+            border-radius: 14px;
+            box-shadow: var(--shadow-sm);
+            position: relative;
+        }
+        .domain-bar::before {
+            content: '';
+            position: absolute;
+            left: -1px; top: -1px; bottom: -1px;
+            width: 4px;
+            background: var(--grad-primary);
+            border-radius: 14px 0 0 14px;
+        }
+        .domain-bar-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12.5px;
+            font-weight: 700;
+            color: var(--primary-dark);
+            letter-spacing: 0.3px;
+            padding-left: 4px;
+        }
+        .domain-bar-label .ico { width: 14px; height: 14px; }
+        .domain-tags { display: flex; gap: 6px; padding: 4px; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04); }
         .domain-tag {
             padding: 7px 14px;
             border-radius: 9px;
@@ -183,7 +218,9 @@
         /* Tabs */
         .tabs {
             display: flex;
-            gap: 4px;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
             background: rgba(255,255,255,0.85);
             backdrop-filter: blur(12px);
             padding: 8px 28px;
@@ -191,6 +228,15 @@
             position: sticky;
             top: 0;
             z-index: 50;
+        }
+        .tabs .tab-group {
+            display: flex;
+            gap: 4px;
+            align-items: stretch;
+        }
+        @media (max-width: 760px) {
+            .domain-bar { margin-left: 0; width: 100%; justify-content: space-between; }
+            .domain-tags { flex-wrap: wrap; }
         }
         .tab {
             padding: 9px 16px;
@@ -697,6 +743,161 @@
         /* Chat citation layout */
         .chat-grid { display: grid; grid-template-columns: 1fr 320px; gap: 18px; align-items: start; }
         @media (max-width: 900px) { .chat-grid { grid-template-columns: 1fr; } }
+
+        /* 会话列表条（chat / generate 两种 scope 通用） */
+        .session-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            margin-bottom: 12px;
+            background: var(--surface-soft);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-md);
+            flex-wrap: wrap;
+        }
+        .session-bar .session-bar-title {
+            font-size: 12px;
+            color: var(--muted);
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .session-bar .session-bar-empty {
+            font-size: 12px;
+            color: var(--muted-soft);
+        }
+        .session-chips {
+            display: flex;
+            gap: 6px;
+            flex: 1;
+            overflow-x: auto;
+            padding: 2px 0;
+            scrollbar-width: thin;
+        }
+        .session-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            color: var(--ink-soft);
+            background: #fff;
+            border: 1px solid var(--line);
+            cursor: pointer;
+            white-space: nowrap;
+            max-width: 220px;
+            transition: all .15s ease;
+        }
+        .session-chip:hover { border-color: var(--primary-light); color: var(--primary-dark); background: var(--line-soft); }
+        .session-chip.active { background: var(--grad-subtle); border-color: var(--primary-light); color: var(--primary-dark); font-weight: 600; }
+        .session-chip .chip-title { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .session-chip .chip-count { opacity: 0.7; font-size: 11px; }
+        .session-chip .chip-close {
+            width: 14px;
+            height: 14px;
+            line-height: 12px;
+            text-align: center;
+            border-radius: 50%;
+            color: var(--muted);
+            background: transparent;
+            font-size: 14px;
+        }
+        .session-chip .chip-close:hover { background: var(--danger-bg); color: var(--danger-fg); }
+        .session-btn {
+            padding: 4px 10px;
+            border-radius: var(--radius-md);
+            font-size: 12px;
+            background: #fff;
+            border: 1px solid var(--line);
+            color: var(--ink-soft);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .session-btn:hover { border-color: var(--primary-light); color: var(--primary-dark); }
+
+        /* 继续修改输入框 */
+        .continue-edit-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px dashed var(--line);
+        }
+        .continue-edit-row input {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-md);
+            font-size: 13px;
+        }
+        .continue-edit-row input:focus { border-color: var(--primary-light); box-shadow: var(--shadow-focus); }
+
+        /* 版本历史列表 */
+        .version-history {
+            margin-top: 16px;
+            padding: 12px;
+            background: var(--surface-soft);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--line);
+        }
+        .version-history-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+        .version-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 240px;
+            overflow-y: auto;
+        }
+        .version-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+        }
+        .version-item.current { border-color: var(--primary-light); background: var(--grad-subtle); }
+        .version-item .v-tag {
+            background: var(--primary);
+            color: #fff;
+            font-weight: 700;
+            border-radius: var(--radius-sm);
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        .version-item.current .v-tag { background: var(--accent); }
+        .version-item .v-summary { flex: 1; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .version-item .v-time { color: var(--muted-soft); font-size: 11px; white-space: nowrap; }
+        .version-item a.v-download {
+            font-size: 11px;
+            color: var(--primary-dark);
+            text-decoration: none;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: var(--line-soft);
+        }
+        .version-item a.v-download:hover { background: var(--line-accent); }
+        .chip-ids {
+            display: inline-flex;
+            gap: 6px;
+            align-items: center;
+            font-size: 11px;
+            color: var(--muted);
+        }
+        .chip-ids code {
+            background: var(--surface-soft);
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+        }
         .refs-card {
             background: #fff;
             border: 1px solid var(--line);
@@ -872,6 +1073,153 @@
         .fmt-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.4px; }
         .fmt-chip.md { background: #e0f2fe; color: #0369a1; }
         .fmt-chip.docx { background: #dbeafe; color: #1e40af; }
+
+        /* ================= Responsive / Mobile ================= */
+        /* 中等屏幕（大手机/小平板）：引用面板单列后限一下高度，避免占满首屏 */
+        @media (max-width: 900px) {
+            .refs-card { max-height: 420px; }
+            .chat-messages { height: 60vh; min-height: 360px; }
+        }
+
+        /* 手机（≤ 640px）：整体紧凑化，避免横向溢出与误触 */
+        @media (max-width: 640px) {
+            html { font-size: 14px; }
+            /* iOS 表单聚焦自动放大：保证输入控件字号 ≥16px */
+            input[type="text"], input[type="search"], input[type="file"], textarea, select {
+                font-size: 16px !important;
+            }
+
+            /* 滚动条收窄 */
+            ::-webkit-scrollbar { width: 6px; height: 6px; }
+
+            /* Header */
+            .header {
+                padding: 14px 16px;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            .header h1 { font-size: 18px; gap: 8px; }
+            .header h1 .logo-chip { width: 32px; height: 32px; border-radius: 9px; }
+            .header h1 .logo-chip .ico { width: 18px; height: 18px; }
+            .header > .sub-meta {
+                font-size: 11px;
+                padding: 3px 10px;
+                flex-wrap: wrap;
+            }
+
+            /* Tabs + domain-bar */
+            .tabs {
+                padding: 8px 12px;
+                gap: 8px;
+            }
+            .tab { padding: 8px 12px; font-size: 13px; gap: 6px; }
+            .tab.active::after { left: 12px; right: 12px; bottom: -8px; }
+            .tabs .tab-group { flex-wrap: wrap; row-gap: 4px; }
+
+            .domain-bar {
+                margin-left: 0;
+                width: 100%;
+                padding: 4px 4px 4px 10px;
+                gap: 8px;
+            }
+            .domain-bar-label { font-size: 11.5px; padding-left: 2px; }
+            .domain-tags { flex-wrap: wrap; gap: 4px; padding: 3px; }
+            .domain-tag { padding: 6px 10px; font-size: 12.5px; }
+
+            /* Panels / Cards */
+            .panel { margin: 16px auto; padding: 0 12px; }
+            .card { padding: 16px 14px; margin-bottom: 14px; border-radius: var(--radius-lg); }
+            .card h3 { font-size: 15px; gap: 8px; flex-wrap: wrap; }
+            .card h3 .title-ico { width: 28px; height: 28px; border-radius: 8px; }
+            .card-sub { margin-left: 0; font-size: 12.5px; margin-bottom: 14px; }
+
+            /* Upload zone */
+            .upload-zone { padding: 24px 14px; }
+            .upload-zone .upload-icon-wrap { width: 44px; height: 44px; border-radius: 12px; margin-bottom: 10px; }
+            .upload-zone .upload-icon-wrap .ico { width: 22px; height: 22px; }
+            .upload-zone p { font-size: 13px; }
+
+            /* File list */
+            .file-list { max-height: 200px; }
+            .file-item { padding: 8px 10px; gap: 8px; font-size: 12.5px; flex-wrap: wrap; }
+            .file-item .file-name { flex: 1 1 100%; order: -1; }
+
+            /* Buttons 小屏稍微紧凑 */
+            .btn { padding: 9px 14px; font-size: 13px; }
+
+            /* Chat */
+            .chat-messages {
+                height: auto;
+                min-height: 420px;
+                max-height: calc(100dvh - 280px);
+                padding: 14px;
+                border-radius: var(--radius-md);
+            }
+            .msg .bubble { max-width: 88%; font-size: 14px; padding: 10px 14px; }
+
+            /* Chat / Locate / Generate 输入行：允许换行，让按钮掉到下一行 */
+            .chat-input-row, .locate-input-row, .generate-input-row {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            .chat-input-row input, .locate-input-row input, .generate-input-row input {
+                flex: 1 1 100%;
+                min-width: 0;
+            }
+            .chat-input-row .btn, .locate-input-row .btn, .generate-input-row .btn {
+                flex: 1 1 auto;
+                justify-content: center;
+            }
+
+            /* Generate 表单 */
+            .field-grid { grid-template-columns: 1fr; gap: 10px; }
+            .generated-meta { grid-template-columns: 1fr; }
+            .generated-result { padding: 14px; }
+            .generated-preview { max-height: 280px; padding: 12px; font-size: 12.5px; }
+            .file-picker { flex-direction: column; align-items: stretch; padding: 12px; gap: 10px; }
+            .file-picker .file-name { word-break: break-all; }
+
+            /* 会话列表条：chip 区域保留横滑，按钮往下兜 */
+            .session-bar { padding: 8px 10px; gap: 8px; }
+            .session-bar .session-bar-title { flex-basis: 100%; }
+            .session-chips { flex: 1 1 100%; order: 1; }
+            .session-btn { order: 2; flex: 0 0 auto; }
+
+            /* 继续修改行：输入 + 选择 + 按钮，允许换行 */
+            .continue-edit-row {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            .continue-edit-row input { flex: 1 1 100%; }
+
+            /* 版本历史 */
+            .version-item { flex-wrap: wrap; row-gap: 4px; }
+            .version-item .v-summary { flex-basis: 100%; order: 3; white-space: normal; }
+            .version-item .v-time { font-size: 10.5px; }
+
+            /* 引用 */
+            .refs-card { padding: 12px; max-height: 420px; }
+            .ref-item { padding: 10px; }
+
+            /* Modal */
+            .modal { width: 94%; max-height: 90vh; border-radius: 14px; }
+            .modal-header { padding: 12px 16px; }
+            .modal-header .title { font-size: 14px; }
+            .modal-body { padding: 14px 16px; font-size: 13px; }
+
+            /* 结果/提示盒子 */
+            .result-box { padding: 12px; font-size: 11.5px; }
+            .section-tip { font-size: 12.5px; padding: 10px 12px; }
+            .danger-tip { font-size: 12px; padding: 10px; }
+        }
+
+        /* 极小屏（≤ 380px，iPhone SE 等）：再收一档 tab/按钮字号 */
+        @media (max-width: 380px) {
+            .tab { padding: 7px 10px; font-size: 12.5px; }
+            .domain-tag { padding: 5px 9px; font-size: 12px; }
+            .card { padding: 14px 12px; }
+            .msg .bubble { max-width: 92%; }
+        }
     </style>
 </head>
 <body>
@@ -979,6 +1327,22 @@
             <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
             <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
         </symbol>
+        <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            <line x1="12" y1="7" x2="12" y2="12"/>
+            <line x1="12" y1="12" x2="16" y2="14"/>
+        </symbol>
+        <symbol id="i-graduation" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 10v6"/>
+            <path d="M2 10l10-5 10 5-10 5-10-5z"/>
+            <path d="M6 12v5c3 2 9 2 12 0v-5"/>
+        </symbol>
+        <symbol id="i-heart-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.5 13H7l2-4 3 7 2-5h6.5"/>
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06h3.27"/>
+            <path d="M14.5 15l-2.5 5-2.5-5"/>
+        </symbol>
     </defs>
 </svg>
 
@@ -987,18 +1351,29 @@
         <span class="logo-chip"><svg class="ico"><use href="#i-sparkles"/></svg></span>
         <span class="brand-text">Pro-RAG</span>
     </h1>
-    <span class="sub-meta">chatId <span id="chatIdDisplay"></span></span>
-    <div class="domain-tags">
-        <div class="domain-tag active" data-domain="bank_risk"><svg class="ico ico-sm"><use href="#i-landmark"/></svg>银行风控</div>
-        <div class="domain-tag" data-domain="history"><svg class="ico ico-sm"><use href="#i-scroll"/></svg>历史</div>
-    </div>
+    <span class="sub-meta chip-ids">
+        会话：
+        <code id="chatIdDisplay"></code>
+        <code id="genChatIdDisplay"></code>
+    </span>
 </div>
 
 <div class="tabs">
-    <div class="tab active" data-panel="upload"><svg class="ico"><use href="#i-upload"/></svg>知识库上传</div>
-    <div class="tab" data-panel="chat"><svg class="ico"><use href="#i-message"/></svg>RAG 对话</div>
-    <div class="tab" data-panel="locate"><svg class="ico"><use href="#i-search"/></svg>文档定位</div>
-    <div class="tab" data-panel="generate"><svg class="ico"><use href="#i-sparkles"/></svg>文档生成</div>
+    <div class="tab-group">
+        <div class="tab active" data-panel="upload"><svg class="ico"><use href="#i-upload"/></svg>知识库上传</div>
+        <div class="tab" data-panel="chat"><svg class="ico"><use href="#i-message"/></svg>RAG 对话</div>
+        <div class="tab" data-panel="locate"><svg class="ico"><use href="#i-search"/></svg>文档定位</div>
+        <div class="tab" data-panel="generate"><svg class="ico"><use href="#i-sparkles"/></svg>文档生成</div>
+    </div>
+    <div class="domain-bar" title="切换领域会改变助手的身份与行文风格，仅影响「RAG 对话」和「文档生成」">
+        <span class="domain-bar-label"><svg class="ico ico-sm"><use href="#i-sparkles"/></svg>当前领域</span>
+        <div class="domain-tags">
+            <div class="domain-tag active" data-domain="bank_risk"><svg class="ico ico-sm"><use href="#i-landmark"/></svg>银行风控</div>
+            <div class="domain-tag" data-domain="history"><svg class="ico ico-sm"><use href="#i-scroll"/></svg>历史</div>
+            <div class="domain-tag" data-domain="education"><svg class="ico ico-sm"><use href="#i-graduation"/></svg>教育</div>
+            <div class="domain-tag" data-domain="medical"><svg class="ico ico-sm"><use href="#i-heart-pulse"/></svg>医疗</div>
+        </div>
+    </div>
 </div>
 
 <!-- Upload Panel -->
@@ -1060,7 +1435,15 @@
             <span class="title-ico"><svg class="ico"><use href="#i-message"/></svg></span>
             <span class="title-text">RAG 智能问答</span>
         </h3>
-        <div class="card-sub">输入问题后将流式返回答案，右侧展示引用来源，点击可展开原文片段。</div>
+        <div class="card-sub">输入问题后将流式返回答案，右侧展示引用来源，点击可展开原文片段。历史会话会持久化到服务端，刷新、重启后仍可点击切回继续聊。</div>
+        <div class="session-bar">
+            <span class="session-bar-title">历史会话</span>
+            <div class="session-chips" id="chatSessionChips"></div>
+            <button class="session-btn" id="chatSessionRefreshBtn" title="刷新会话列表">
+                <svg class="ico ico-sm"><use href="#i-refresh"/></svg>
+            </button>
+            <button class="session-btn" id="chatSessionNewBtn">+ 新会话</button>
+        </div>
         <div class="chat-grid">
             <div>
                 <div class="chat-messages" id="chatMessages">
@@ -1113,6 +1496,22 @@
 
 <!-- Generate Panel -->
 <div class="panel" id="panel-generate">
+    <div class="card">
+        <h3>
+            <span class="title-ico"><svg class="ico"><use href="#i-sparkles"/></svg></span>
+            <span class="title-text">生成会话</span>
+        </h3>
+        <div class="card-sub">文档生成支持多轮对话式修改——在同一会话里连续追问（如"把第三部分改短"），模型会在上一版基础上做最小化增量修改。所有会话和版本都持久化到服务端，刷新后仍可回到任何一版继续改。</div>
+        <div class="session-bar">
+            <span class="session-bar-title">生成会话</span>
+            <div class="session-chips" id="genSessionChips"></div>
+            <button class="session-btn" id="genSessionRefreshBtn" title="刷新会话列表">
+                <svg class="ico ico-sm"><use href="#i-refresh"/></svg>
+            </button>
+            <button class="session-btn" id="genSessionNewBtn">+ 新会话</button>
+        </div>
+    </div>
+
     <div class="card">
         <h3>
             <span class="title-ico"><svg class="ico"><use href="#i-sparkles"/></svg></span>
@@ -1205,6 +1604,31 @@
         </div>
         <div class="generated-result" id="uploadGenerateResult"></div>
     </div>
+
+    <div class="card">
+        <h3>
+            <span class="title-ico"><svg class="ico"><use href="#i-history"/></svg></span>
+            <span class="title-text">当前会话 · 多轮修改与版本历史</span>
+        </h3>
+        <div class="card-sub">每次"生成文件"或"上传并生成"成功后都会在此追加一版。直接在下方输入修改意见，可以在上一版基础上继续改（不需要重新上传文件，也不必重新描述整篇文档）。</div>
+        <div class="continue-edit-row">
+            <input type="text" id="continueEditInstruction" placeholder="例如：把第三部分精简成 5 条要点；或者：给每个章节末尾补一个引用来源" />
+            <select id="continueEditFormat">
+                <option value="markdown">Markdown (.md)</option>
+                <option value="docx">Word (.docx)</option>
+            </select>
+            <button class="btn btn-primary" id="continueEditBtn">
+                <svg class="ico"><use href="#i-pen"/></svg>继续修改
+            </button>
+        </div>
+        <div class="version-history">
+            <div class="version-history-title">版本历史（按时间倒序）</div>
+            <div class="version-list" id="genVersionList">
+                <div class="session-bar-empty">尚未生成任何版本。先在上面"生成文件产物"或"上传即生成"产出第一版。</div>
+            </div>
+        </div>
+        <div class="generated-result" id="continueEditResult"></div>
+    </div>
 </div>
 
 <script>
@@ -1229,10 +1653,39 @@ function generateChatId() {
     return 'chat-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10);
 }
 
-let chatId = generateChatId();
+// 会话 ID 作用域分离：对话 / 文档生成各自独立，分别持久化到 localStorage
+const CHAT_ID_STORAGE_KEY = 'pro-rag.chatId.chat';
+const GEN_ID_STORAGE_KEY = 'pro-rag.chatId.gen';
+
+function readOrCreateChatId(scope) {
+    const storageKey = scope === 'gen' ? GEN_ID_STORAGE_KEY : CHAT_ID_STORAGE_KEY;
+    const prefix = scope === 'gen' ? 'gen-' : 'chat-';
+    let id = null;
+    try { id = localStorage.getItem(storageKey); } catch (_) {}
+    if (!id || !id.startsWith(prefix)) {
+        id = prefix + generateChatId();
+        try { localStorage.setItem(storageKey, id); } catch (_) {}
+    }
+    return id;
+}
+
+function persistChatId(scope, id) {
+    const storageKey = scope === 'gen' ? GEN_ID_STORAGE_KEY : CHAT_ID_STORAGE_KEY;
+    try { localStorage.setItem(storageKey, id); } catch (_) {}
+}
+
+let chatId = readOrCreateChatId('chat');
+let genChatId = readOrCreateChatId('gen');
 let currentDomain = 'bank_risk';
 let uploadedDirectiveFiles = [];
-document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
+
+function refreshChatIdDisplay() {
+    const chatEl = document.getElementById('chatIdDisplay');
+    if (chatEl) chatEl.textContent = '对话 ' + chatId.slice(5, 13);
+    const genEl = document.getElementById('genChatIdDisplay');
+    if (genEl) genEl.textContent = '生成 ' + genChatId.slice(4, 12);
+}
+refreshChatIdDisplay();
 
 // --- Domain Tags ---
 document.querySelectorAll('.domain-tag').forEach(tag => {
@@ -1826,6 +2279,8 @@ function sendChat() {
     const url = '/pro-rag/chat/sse?message=' + encodeURIComponent(msg)
         + '&chatId=' + encodeURIComponent(chatId)
         + '&domain=' + encodeURIComponent(currentDomain);
+    // 首次对话后异步刷新会话列表，让标题/计数同步
+    setTimeout(refreshChatSessionList, 600);
     const es = new EventSource(url);
     currentEventSource = es;
 
@@ -1977,16 +2432,307 @@ async function openChunkModal(chunkId, refHint) {
 }
 
 // --- New Chat ---
-document.getElementById('chatNewBtn').addEventListener('click', () => {
+function resetChatConversation(newChatId) {
+    chatId = newChatId;
+    persistChatId('chat', chatId);
     chatMessages.innerHTML = '<div class="empty-state" id="chatEmpty"><span class="empty-ico"><svg class="ico"><use href="#i-message"/></svg></span><div class="empty-title">开始一段对话</div><div>输入问题，我会从知识库中检索并附上引用</div></div>';
-    chatId = generateChatId();
-    document.getElementById('chatIdDisplay').textContent = chatId.slice(0, 8) + '...';
+    refreshChatIdDisplay();
     if (currentEventSource) { try { currentEventSource.close(); } catch (_) {} currentEventSource = null; }
     currentReferences = [];
     currentReferencesMessageId = null;
     messageReferences.clear();
     renderReferences([], null);
+}
+
+document.getElementById('chatNewBtn').addEventListener('click', () => {
+    resetChatConversation('chat-' + generateChatId());
+    refreshChatSessionList();
 });
+
+// --- 会话列表（对话 / 生成 共用） ---
+const chatSessionChips = document.getElementById('chatSessionChips');
+const genSessionChips = document.getElementById('genSessionChips');
+
+function formatSessionTitle(info) {
+    if (info.title && info.title.trim()) return info.title;
+    return (info.conversationId || '').slice(0, 12) + '...';
+}
+
+function formatSessionTime(iso) {
+    try {
+        const d = new Date(iso);
+        const pad = n => (n < 10 ? '0' + n : n);
+        return d.getMonth() + 1 + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    } catch (_) { return ''; }
+}
+
+function renderSessionChips(container, sessions, scope) {
+    if (!container) return;
+    container.innerHTML = '';
+    if (!sessions || sessions.length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'session-bar-empty';
+        empty.textContent = '暂无历史会话，开始对话后会自动生成。';
+        container.appendChild(empty);
+        return;
+    }
+    const activeId = scope === 'gen' ? genChatId : chatId;
+    sessions.forEach(info => {
+        const chip = document.createElement('div');
+        chip.className = 'session-chip';
+        if (info.conversationId === activeId) chip.classList.add('active');
+        chip.title = (info.title || info.conversationId) + '\n更新时间: ' + formatSessionTime(info.updatedAt);
+
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'chip-title';
+        titleSpan.textContent = formatSessionTitle(info);
+        chip.appendChild(titleSpan);
+
+        const countSpan = document.createElement('span');
+        countSpan.className = 'chip-count';
+        countSpan.textContent = '(' + (info.messageCount || 0) + ')';
+        chip.appendChild(countSpan);
+
+        const close = document.createElement('span');
+        close.className = 'chip-close';
+        close.textContent = '\u00d7';
+        close.title = '删除此会话';
+        close.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!confirm('删除会话"' + formatSessionTitle(info) + '"？此操作不可恢复。')) return;
+            await fetch('/pro-rag/conversations/' + encodeURIComponent(info.conversationId), { method: 'DELETE' });
+            if (info.conversationId === activeId) {
+                if (scope === 'gen') {
+                    genChatId = 'gen-' + generateChatId();
+                    persistChatId('gen', genChatId);
+                    refreshChatIdDisplay();
+                    refreshGenSessionList();
+                } else {
+                    resetChatConversation('chat-' + generateChatId());
+                }
+            }
+            if (scope === 'gen') refreshGenSessionList(); else refreshChatSessionList();
+        });
+        chip.appendChild(close);
+
+        chip.addEventListener('click', () => switchSession(scope, info.conversationId));
+        container.appendChild(chip);
+    });
+}
+
+async function refreshChatSessionList() {
+    try {
+        const res = await fetch('/pro-rag/conversations?scope=chat&limit=50');
+        if (!res.ok) return;
+        const sessions = await res.json();
+        renderSessionChips(chatSessionChips, sessions, 'chat');
+    } catch (_) { /* 忽略加载失败，不影响主流程 */ }
+}
+
+async function refreshGenSessionList() {
+    try {
+        const res = await fetch('/pro-rag/conversations?scope=generate&limit=50');
+        if (!res.ok) return;
+        const sessions = await res.json();
+        renderSessionChips(genSessionChips, sessions, 'gen');
+    } catch (_) {}
+}
+
+async function switchSession(scope, conversationId) {
+    if (!conversationId) return;
+    if (scope === 'chat') {
+        await loadChatConversation(conversationId);
+    } else {
+        await loadGenConversation(conversationId);
+    }
+}
+
+async function loadChatConversation(conversationId) {
+    resetChatConversation(conversationId);
+    try {
+        const res = await fetch('/pro-rag/conversations/' + encodeURIComponent(conversationId) + '/messages');
+        if (!res.ok) return;
+        const data = await res.json();
+        const messages = data.messages || [];
+        // 清空 empty state
+        const emptyEl = document.getElementById('chatEmpty');
+        if (emptyEl && messages.length > 0) emptyEl.style.display = 'none';
+        messages.forEach(m => {
+            if (m.messageType === 'USER') {
+                // user 的 content 里含检索 prompt 时，截出最后一段"用户问题/指令"
+                appendMsg('user', extractUserDisplay(m.content));
+            } else if (m.messageType === 'ASSISTANT') {
+                const bubble = appendMsg('assistant', m.content);
+                bubble.dataset.messageId = 'm_history_' + m.id;
+            }
+        });
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    } finally {
+        refreshChatSessionList();
+    }
+}
+
+function extractUserDisplay(rawContent) {
+    if (!rawContent) return '';
+    // prompt 模板里真正的用户问题一般出现在"用户问题："或"用户指令"之后
+    const markers = ['用户问题：', '用户指令', '## 用户指令'];
+    for (const m of markers) {
+        const idx = rawContent.lastIndexOf(m);
+        if (idx >= 0) {
+            return rawContent.substring(idx + m.length).replace(/^[：:\s]+/, '').trim();
+        }
+    }
+    return rawContent;
+}
+
+async function loadGenConversation(conversationId) {
+    genChatId = conversationId;
+    persistChatId('gen', genChatId);
+    refreshChatIdDisplay();
+    // 清空版本列表后重新拉消息
+    genVersions = [];
+    try {
+        const res = await fetch('/pro-rag/conversations/' + encodeURIComponent(conversationId) + '/messages');
+        if (res.ok) {
+            const data = await res.json();
+            const messages = data.messages || [];
+            let round = 0;
+            messages.forEach(m => {
+                if (m.messageType === 'USER') round += 1;
+                if (m.messageType === 'ASSISTANT') {
+                    genVersions.push({
+                        version: round,
+                        instruction: '(历史记录)',
+                        timestamp: m.createdAt,
+                        previewContent: (m.content || '').slice(0, 800),
+                        historyOnly: true
+                    });
+                }
+            });
+        }
+    } catch (_) {}
+    renderGenVersionList();
+    refreshGenSessionList();
+}
+
+// --- 版本历史（生成侧） ---
+let genVersions = [];
+const genVersionList = document.getElementById('genVersionList');
+const continueEditInstruction = document.getElementById('continueEditInstruction');
+const continueEditFormat = document.getElementById('continueEditFormat');
+const continueEditBtn = document.getElementById('continueEditBtn');
+const continueEditResult = document.getElementById('continueEditResult');
+
+function renderGenVersionList() {
+    if (!genVersionList) return;
+    if (!genVersions.length) {
+        genVersionList.innerHTML = '<div class="session-bar-empty">尚未生成任何版本。先在上面"生成文件产物"或"上传即生成"产出第一版。</div>';
+        return;
+    }
+    genVersionList.innerHTML = '';
+    // 倒序展示
+    const items = [...genVersions].reverse();
+    items.forEach((v, idx) => {
+        const item = document.createElement('div');
+        item.className = 'version-item';
+        if (idx === 0) item.classList.add('current');
+
+        const tag = document.createElement('span');
+        tag.className = 'v-tag';
+        tag.textContent = 'v' + (v.version || (genVersions.length - idx));
+        item.appendChild(tag);
+
+        const summary = document.createElement('span');
+        summary.className = 'v-summary';
+        summary.title = v.instruction || '';
+        summary.textContent = v.outputFilename || v.instruction || '(无指令)';
+        item.appendChild(summary);
+
+        const time = document.createElement('span');
+        time.className = 'v-time';
+        time.textContent = formatSessionTime(v.timestamp);
+        item.appendChild(time);
+
+        if (v.outputFilename && !v.historyOnly) {
+            const link = document.createElement('a');
+            link.className = 'v-download';
+            link.href = '/pro-rag/generated-files/' + encodeURIComponent(v.outputFilename);
+            link.textContent = '下载';
+            link.setAttribute('download', v.outputFilename);
+            item.appendChild(link);
+        }
+
+        genVersionList.appendChild(item);
+    });
+}
+
+function pushGenVersion(data, instruction) {
+    if (!data) return;
+    if (data.chatId) {
+        genChatId = data.chatId;
+        persistChatId('gen', genChatId);
+        refreshChatIdDisplay();
+    }
+    genVersions.push({
+        version: data.version || (genVersions.length + 1),
+        instruction: instruction || '',
+        outputFilename: data.outputFilename,
+        outputFilePath: data.outputFilePath,
+        previewContent: data.previewContent,
+        timestamp: new Date().toISOString()
+    });
+    renderGenVersionList();
+    refreshGenSessionList();
+}
+
+document.getElementById('chatSessionRefreshBtn').addEventListener('click', refreshChatSessionList);
+document.getElementById('chatSessionNewBtn').addEventListener('click', () => {
+    resetChatConversation('chat-' + generateChatId());
+    refreshChatSessionList();
+});
+document.getElementById('genSessionRefreshBtn').addEventListener('click', refreshGenSessionList);
+document.getElementById('genSessionNewBtn').addEventListener('click', () => {
+    genChatId = 'gen-' + generateChatId();
+    persistChatId('gen', genChatId);
+    refreshChatIdDisplay();
+    genVersions = [];
+    renderGenVersionList();
+    refreshGenSessionList();
+});
+
+continueEditBtn.addEventListener('click', async () => {
+    const instruction = (continueEditInstruction.value || '').trim();
+    if (!instruction) return;
+    continueEditBtn.disabled = true;
+    setGeneratedLoading(continueEditResult, '增量修改中（基于上一版）...');
+    try {
+        const form = new FormData();
+        form.append('chatId', genChatId);
+        form.append('instruction', instruction);
+        form.append('domain', currentDomain);
+        form.append('outputFormat', continueEditFormat.value || 'markdown');
+        const res = await fetch('/pro-rag/generate-file', { method: 'POST', body: form });
+        if (!res.ok) {
+            const errData = await res.text();
+            setGeneratedError(continueEditResult, 'Error: ' + errData);
+        } else {
+            const data = await res.json();
+            renderGeneratedFileResult(continueEditResult, data);
+            pushGenVersion(data, instruction);
+            continueEditInstruction.value = '';
+        }
+    } catch (e) {
+        setGeneratedError(continueEditResult, 'Error: ' + e.message);
+    } finally {
+        continueEditBtn.disabled = false;
+    }
+});
+continueEditInstruction.addEventListener('keydown', e => { if (e.key === 'Enter') continueEditBtn.click(); });
+
+// 页面加载后拉一次会话列表 & 版本列表
+refreshChatSessionList();
+refreshGenSessionList();
+renderGenVersionList();
 
 // --- Locate ---
 const locateInput = document.getElementById('locateInput');
@@ -2071,7 +2817,7 @@ generateBtn.addEventListener('click', async () => {
 
     try {
         const form = new FormData();
-        form.append('chatId', chatId);
+        form.append('chatId', genChatId);
         form.append('instruction', instruction);
         form.append('domain', currentDomain);
         const res = await fetch('/pro-rag/generate', { method: 'POST', body: form });
@@ -2109,7 +2855,7 @@ generateFileBtn.addEventListener('click', async () => {
 
     try {
         const form = new FormData();
-        form.append('chatId', chatId);
+        form.append('chatId', genChatId);
         form.append('instruction', instruction);
         form.append('domain', currentDomain);
         form.append('outputFormat', generateOutputFormat.value);
@@ -2124,6 +2870,7 @@ generateFileBtn.addEventListener('click', async () => {
         } else {
             const data = await res.json();
             renderGeneratedFileResult(generateFileResult, data);
+            pushGenVersion(data, instruction);
         }
     } catch (e) {
         setGeneratedError(generateFileResult, 'Error: ' + e.message);
@@ -2149,7 +2896,7 @@ uploadAndGenerateBtn.addEventListener('click', async () => {
     try {
         const form = new FormData();
         form.append('file', file);
-        form.append('chatId', chatId);
+        form.append('chatId', genChatId);
         form.append('instruction', instruction);
         form.append('domain', currentDomain);
         form.append('outputFormat', uploadGenerateOutputFormat.value);
@@ -2163,6 +2910,7 @@ uploadAndGenerateBtn.addEventListener('click', async () => {
         } else {
             const data = await res.json();
             renderGeneratedFileResult(uploadGenerateResult, data);
+            pushGenVersion(data, instruction);
         }
     } catch (e) {
         setGeneratedError(uploadGenerateResult, 'Error: ' + e.message);
