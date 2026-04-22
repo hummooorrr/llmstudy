@@ -3,9 +3,12 @@ package cn.wzw.llm.study.llmstudy.service;
 import cn.wzw.llm.study.llmstudy.model.EsDocumentChunk;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.Refresh;
+import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.*;
 import co.elastic.clients.elasticsearch.indices.CreateIndexRequest;
 import co.elastic.clients.elasticsearch.indices.ExistsRequest;
+import co.elastic.clients.elasticsearch.indices.PutMappingRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -16,6 +19,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /** Pro-Rag ElasticSearch 服务：索引管理、批量写入、按文件名查询删除和中文关键词检索 */
 @Service
@@ -38,15 +42,16 @@ public class ProRagElasticSearchService {
                 createIndex();
                 log.info("ES index [{}] created with IK analyzer!", INDEX_NAME);
             } else {
-                log.info("ES index [{}] already exists, skip creation.", INDEX_NAME);
+                log.info("ES index [{}] already exists, skip creation. Attempting mapping upgrade for metadata fields.", INDEX_NAME);
+                ensureMetadataMapping();
             }
         } catch (Exception e) {
-            log.error("Failed to create ES index: {}", e.getMessage(), e);
+            log.error("Failed to initialise ES index: {}", e.getMessage(), e);
         }
     }
 
     /**
-     * 创建索引（IK 分词 + 停用词 + lowercase + filePath/filename 映射）
+     * 创建索引（IK 分词 + 停用词 + lowercase + filePath/filename 映射 + 结构化 metadata 字段）
      */
     public void createIndex() throws Exception {
         String settingsAndMappingJson =
@@ -92,13 +97,8 @@ public class ProRagElasticSearchService {
                         + "},"
                         + "\"metadata\": {"
                         + "\"type\": \"object\","
-                        + "\"properties\": {"
-                        + "\"source\": { \"type\": \"keyword\" },"
-                        + "\"category\": { \"type\": \"keyword\" },"
-                        + "\"orderId\": { \"type\": \"keyword\" },"
-                        + "\"filePath\": { \"type\": \"keyword\" },"
-                        + "\"filename\": { \"type\": \"keyword\" }"
-                        + "}"
+                        + "\"properties\": "
+                        + metadataPropertiesJson()
                         + "}"
                         + "}"
                         + "}"
@@ -110,6 +110,44 @@ public class ProRagElasticSearchService {
         );
 
         client.indices().create(request);
+    }
+
+    /**
+     * 增量为已有索引追加新的 metadata 字段（chunkType / pageNumber / sectionPath / assetPath / chunkProfile 等）。
+     * 仅做字段追加，不会修改已有字段类型。
+     */
+    public void ensureMetadataMapping() {
+        try {
+            String mappingJson = "{\"properties\":{\"metadata\":{\"properties\":"
+                    + metadataPropertiesJson() + "}}}";
+            PutMappingRequest request = PutMappingRequest.of(b -> b
+                    .index(INDEX_NAME)
+                    .withJson(new StringReader(mappingJson))
+            );
+            client.indices().putMapping(request);
+            log.info("ES index [{}] metadata mapping ensured.", INDEX_NAME);
+        } catch (Exception e) {
+            log.warn("ES metadata mapping 追加失败（可能是字段类型冲突，建议新环境 reindex）: {}", e.getMessage());
+        }
+    }
+
+    private String metadataPropertiesJson() {
+        return "{"
+                + "\"source\": { \"type\": \"keyword\" },"
+                + "\"category\": { \"type\": \"keyword\" },"
+                + "\"orderId\": { \"type\": \"keyword\" },"
+                + "\"filePath\": { \"type\": \"keyword\" },"
+                + "\"filename\": { \"type\": \"keyword\" },"
+                + "\"chunkType\": { \"type\": \"keyword\" },"
+                + "\"pageNumber\": { \"type\": \"integer\" },"
+                + "\"sectionPath\": { \"type\": \"keyword\" },"
+                + "\"assetPath\": { \"type\": \"keyword\" },"
+                + "\"assetDescription\": { \"type\": \"text\", \"analyzer\": \"ik_smart\" },"
+                + "\"chunkProfile\": { \"type\": \"keyword\" },"
+                + "\"chunkSize\": { \"type\": \"integer\" },"
+                + "\"chunkOverlap\": { \"type\": \"integer\" },"
+                + "\"sourceType\": { \"type\": \"keyword\" }"
+                + "}";
     }
 
     /**
@@ -212,10 +250,79 @@ public class ProRagElasticSearchService {
         List<EsDocumentChunk> result = new ArrayList<>();
         response.hits().hits().forEach(hit -> {
             if (hit.source() != null) {
-                result.add(hit.source());
+                EsDocumentChunk chunk = hit.source();
+                if (chunk.getId() == null) {
+                    chunk.setId(hit.id());
+                }
+                result.add(chunk);
             }
         });
 
         return result;
+    }
+
+    /**
+     * 按 _id 精确查询单个 chunk，用于前端点击引用角标查看原文上下文。
+     */
+    public Optional<EsDocumentChunk> findById(String id) throws Exception {
+        if (id == null || id.isBlank()) {
+            return Optional.empty();
+        }
+        GetResponse<EsDocumentChunk> response = client.get(g -> g.index(INDEX_NAME).id(id), EsDocumentChunk.class);
+        if (!response.found() || response.source() == null) {
+            return Optional.empty();
+        }
+        EsDocumentChunk chunk = response.source();
+        if (chunk.getId() == null) {
+            chunk.setId(response.id());
+        }
+        return Optional.of(chunk);
+    }
+
+    /**
+     * 找同一文件内、同一页码下的相邻 chunk，作为预览时的上下文。
+     * 结果按 chunkProfile + chunkSize 的"自然顺序"大致还原入库顺序。
+     */
+    public List<EsDocumentChunk> findSiblings(String filename, Integer pageNumber, int limit) throws Exception {
+        if (filename == null || filename.isBlank()) {
+            return List.of();
+        }
+        SearchRequest request = SearchRequest.of(b -> {
+            b.index(INDEX_NAME).size(Math.max(1, limit));
+            b.query(q -> q.bool(bool -> {
+                bool.must(m -> m.term(t -> t.field("metadata.filename").value(filename)));
+                if (pageNumber != null) {
+                    bool.must(m -> m.term(t -> t.field("metadata.pageNumber").value(pageNumber)));
+                }
+                return bool;
+            }));
+            b.sort(s -> s.field(f -> f.field("metadata.pageNumber").order(SortOrder.Asc)));
+            return b;
+        });
+
+        SearchResponse<EsDocumentChunk> response = client.search(request, EsDocumentChunk.class);
+        List<EsDocumentChunk> result = new ArrayList<>();
+        response.hits().hits().forEach(hit -> {
+            if (hit.source() != null) {
+                EsDocumentChunk chunk = hit.source();
+                if (chunk.getId() == null) {
+                    chunk.setId(hit.id());
+                }
+                result.add(chunk);
+            }
+        });
+        return result;
+    }
+
+    /**
+     * 删除整个索引并按最新 mapping 重建。调用方需要额外重新入库已有文件。
+     */
+    public void recreateIndex() throws Exception {
+        if (indexExists(INDEX_NAME)) {
+            client.indices().delete(d -> d.index(INDEX_NAME));
+            log.warn("ES index [{}] deleted for recreation.", INDEX_NAME);
+        }
+        createIndex();
+        log.info("ES index [{}] recreated with latest mapping.", INDEX_NAME);
     }
 }

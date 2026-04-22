@@ -14,6 +14,15 @@ public class DomainPromptConfig {
 
     public record DomainPrompt(String chatPrompt, String generatePrompt, String defaultFileName) {}
 
+    /** 引用规范（chat 场景注入）：LLM 必须按角标格式标注，前端据此渲染可点击 citation */
+    private static final String CITATION_RULES =
+            "## 引用规范\n"
+            + "- 参考文档列表中每条都以 [c1]、[c2] ... 形式给出编号（对应 refId），编号按顺序出现\n"
+            + "- 每当你在回答中使用了某条参考文档的信息，必须在相关句末追加 `[^c1]`、`[^c2]` 这样的角标（使用英文方括号 + caret + 小写 c + 数字）\n"
+            + "- 多个材料同时支撑一个结论时可连写：`[^c1][^c3]`\n"
+            + "- 不要编造不存在的角标；没有实际支撑的语句不要加角标\n"
+            + "- 不要在回答末尾再单独列\"参考文档\"列表，系统会在前端渲染\n\n";
+
     private final Map<String, DomainPrompt> domains = new LinkedHashMap<>();
 
     @PostConstruct
@@ -22,7 +31,8 @@ public class DomainPromptConfig {
         domains.put("bank_risk", new DomainPrompt(
                 "你是银行风控领域的智能助手，专门帮助银行风控从业人员解答工作中遇到的问题。\n"
                         + "请基于以下参考文档内容回答用户的问题。如果参考文档中没有相关信息，请直接说明\"没有找到相关信息\"，不要编造内容。\n\n"
-                        + "参考文档：\n"
+                        + CITATION_RULES
+                        + "\n参考文档：\n"
                         + "%s\n\n"
                         + "用户问题：%s\n",
                 "你是一名专业的银行风控合规文书撰写专家。你的任务是根据用户指令和参考资料，撰写或修改一份正式的银行风控合规文档。\n\n"
@@ -44,7 +54,8 @@ public class DomainPromptConfig {
         domains.put("history", new DomainPrompt(
                 "你是一名历史学专家，擅长以严谨的史学方法解答历史相关问题。\n"
                         + "请基于以下参考文档内容用通俗易懂的表述回答用户的问题。如果参考文档中没有相关信息，请直接说明\"没有找到相关信息\"，不要编造内容。\n\n"
-                        + "参考文档：\n"
+                        + CITATION_RULES
+                        + "\n参考文档：\n"
                         + "%s\n\n"
                         + "用户问题：%s\n",
                 "你是一名专业的历史文献研究专家和史料编纂者。你的任务是根据用户指令和参考资料，撰写或修改一份严谨的历史文献分析或史料整理文档，用通俗易懂的表述。\n\n"

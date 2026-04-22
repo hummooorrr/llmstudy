@@ -38,15 +38,18 @@ public class StorageCleanupService {
     private final StorageCleanupProperties storageCleanupProperties;
     private final EmbeddingService embeddingService;
     private final ProRagElasticSearchService proRagElasticSearchService;
+    private final AssetStorageService assetStorageService;
 
     public StorageCleanupService(
             StorageCleanupProperties storageCleanupProperties,
             EmbeddingService embeddingService,
-            ProRagElasticSearchService proRagElasticSearchService
+            ProRagElasticSearchService proRagElasticSearchService,
+            AssetStorageService assetStorageService
     ) {
         this.storageCleanupProperties = storageCleanupProperties;
         this.embeddingService = embeddingService;
         this.proRagElasticSearchService = proRagElasticSearchService;
+        this.assetStorageService = assetStorageService;
     }
 
     public boolean isCleanupEnabled() {
@@ -97,6 +100,7 @@ public class StorageCleanupService {
         List<String> esIds = proRagElasticSearchService.findIdsByFilename(safeFilename);
 
         boolean fileDeleted = false;
+        int purgedAssetCount = 0;
         if (!dryRun) {
             embeddingService.deleteByIds(vectorIds);
             proRagElasticSearchService.deleteByIds(esIds);
@@ -104,14 +108,19 @@ public class StorageCleanupService {
                 Files.delete(uploadFile);
                 fileDeleted = true;
             }
+            try {
+                purgedAssetCount = assetStorageService.purgeBucket(uploadFile.toAbsolutePath().toString());
+            } catch (Exception e) {
+                log.warn("清理 asset 目录失败: {} -> {}", uploadFile, e.getMessage());
+            }
         }
 
         String message = dryRun
                 ? "演练完成，将删除本地上传文件并同步清理向量库与 ES 索引。"
                 : "已完成上传文件及其知识库索引清理。";
 
-        log.info("上传文件彻底清理 filename={}, dryRun={}, fileExists={}, vectorIds={}, esIds={}",
-                safeFilename, dryRun, fileExists, vectorIds.size(), esIds.size());
+        log.info("上传文件彻底清理 filename={}, dryRun={}, fileExists={}, vectorIds={}, esIds={}, assets={}",
+                safeFilename, dryRun, fileExists, vectorIds.size(), esIds.size(), purgedAssetCount);
 
         return new PurgeUploadedFileResult(
                 safeFilename,

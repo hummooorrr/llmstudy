@@ -112,7 +112,46 @@ docker compose up -d --build
 docker compose restart app
 ```
 
-## 7. 上线前建议
+## 7. 升级已有环境（仅限结构化解析版本）
+
+如果你是从"旧的只做纯文本切分"的老版本升级到当前结构化解析版本，**ES 索引里新增了几个 metadata 字段**（`chunkType` / `pageNumber` / `sectionPath` / `assetPath` / `chunkProfile` 等）。应用启动时会自动尝试 `put-mapping` 做增量追加，正常情况下无需任何操作。
+
+只有下面两种情况才需要手动介入：
+
+- 启动日志出现 `ES metadata mapping 追加失败（可能是字段类型冲突，建议新环境 reindex）`
+- 或者你希望前端的"引用预览 / 同页邻居"功能完整生效
+
+那就走一遍重建流程（会清空所有 ES 索引，PG 向量库不动）：
+
+```bash
+# 容器已在跑的前提下，在宿主机执行（把 USER:PASS 换成你 nginx basic auth 的账密）
+curl -u USER:PASS -X POST http://你的服务器公网IP/pro-rag/admin/recreate-index
+```
+
+之后进入前端页面，对每个之前上传过的文件逐个点"补录"，或者直接调 API：
+
+```bash
+curl -u USER:PASS -X POST \
+  "http://你的服务器公网IP/pro-rag/reingest?filename=xxx.pdf"
+```
+
+扫描件或特殊文档可以带 profile 参数强制走某条流水线，比如：
+
+```bash
+curl -u USER:PASS -X POST \
+  "http://你的服务器公网IP/pro-rag/reingest?filename=xxx.pdf&profile=pdf-scanned"
+```
+
+## 8. 成本开关
+
+`.env` 里的两个结构化解析开关用于平衡"检索质量"和"VL 调用成本"：
+
+- `PRO_RAG_STRUCTURED_PARSE_ENABLED=true`：PDF/DOCX 会额外抽取表格 → Markdown、图片 → VL 描述，带来每份文档数次到十几次视觉模型调用。关掉后走纯文本切分流程，成本最低。
+- `PRO_RAG_MAX_IMAGES_PER_DOC=20`：单份文档抽取图片数上限。像目录图、水印图、装饰图多的 PDF 可以调小（比如 5）限制 VL 费用。
+
+修改 `.env` 后只需 `docker compose restart app` 生效。
+
+## 9. 上线前建议
 
 这套配置可以先直接跑起来，但正式长期使用前建议再补两件事：
 

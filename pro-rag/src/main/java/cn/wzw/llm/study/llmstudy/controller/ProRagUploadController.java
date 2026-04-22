@@ -23,10 +23,16 @@ public class ProRagUploadController {
     /**
      * 上传文件并入库
      * 支持 PDF、Word、Markdown、HTML、TXT、JSON 等格式
+     *
+     * @param file    待上传文件
+     * @param profile 可选的分块 profile（如 pdf-scanned / markdown / word），留空则按扩展名自动选择
      */
     @PostMapping("/upload")
-    public UploadedDocumentResult upload(@RequestParam("file") MultipartFile file) throws Exception {
-        return proRagDocumentIngestionService.upload(file);
+    public UploadedDocumentResult upload(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "profile", required = false) String profile
+    ) throws Exception {
+        return proRagDocumentIngestionService.upload(file, profile);
     }
 
     /**
@@ -34,9 +40,13 @@ public class ProRagUploadController {
      * 用于入库失败后的补录
      *
      * @param filename 上传目录中的文件名
+     * @param profile  可选的分块 profile 覆盖
      */
     @PostMapping("/reingest")
-    public UploadedDocumentResult reingest(@RequestParam("filename") String filename) throws Exception {
-        return proRagDocumentIngestionService.reingest(filename);
+    public UploadedDocumentResult reingest(
+            @RequestParam("filename") String filename,
+            @RequestParam(value = "profile", required = false) String profile
+    ) throws Exception {
+        return proRagDocumentIngestionService.reingest(filename, profile);
     }
 }

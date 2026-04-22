@@ -55,6 +55,8 @@ services:
       ELASTICSEARCH_URIS: http://elasticsearch:9200
       PRO_RAG_UPLOAD_DIR: /data/uploads
       PRO_RAG_GENERATED_DIR: /data/generated
+      PRO_RAG_STRUCTURED_PARSE_ENABLED: ${PRO_RAG_STRUCTURED_PARSE_ENABLED:-true}
+      PRO_RAG_MAX_IMAGES_PER_DOC: ${PRO_RAG_MAX_IMAGES_PER_DOC:-20}
       JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx1536m}
     depends_on:
       postgres:
