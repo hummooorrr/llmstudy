@@ -1,5 +1,6 @@
 package cn.wzw.llm.study.llmstudy.service;
 
+import cn.wzw.llm.study.llmstudy.model.ChunkMetadataKeys;
 import cn.wzw.llm.study.llmstudy.model.EsDocumentChunk;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.Refresh;
@@ -18,7 +19,10 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 
 /** Pro-Rag ElasticSearch 服务：索引管理、批量写入、按文件名查询删除和中文关键词检索 */
@@ -138,6 +142,7 @@ public class ProRagElasticSearchService {
                 + "\"orderId\": { \"type\": \"keyword\" },"
                 + "\"filePath\": { \"type\": \"keyword\" },"
                 + "\"filename\": { \"type\": \"keyword\" },"
+                + "\"chunkId\": { \"type\": \"keyword\" },"
                 + "\"chunkType\": { \"type\": \"keyword\" },"
                 + "\"pageNumber\": { \"type\": \"integer\" },"
                 + "\"sectionPath\": { \"type\": \"keyword\" },"
@@ -280,10 +285,9 @@ public class ProRagElasticSearchService {
     }
 
     /**
-     * 找同一文件内、同一页码下的相邻 chunk，作为预览时的上下文。
-     * 结果按 chunkProfile + chunkSize 的"自然顺序"大致还原入库顺序。
+     * 按文件名/页码回查候选 chunk，用于引用 ID 不一致时的兜底定位。
      */
-    public List<EsDocumentChunk> findSiblings(String filename, Integer pageNumber, int limit) throws Exception {
+    public List<EsDocumentChunk> findCandidates(String filename, Integer pageNumber, int limit) throws Exception {
         if (filename == null || filename.isBlank()) {
             return List.of();
         }
@@ -312,6 +316,190 @@ public class ProRagElasticSearchService {
             }
         });
         return result;
+    }
+
+    /**
+     * 为当前 chunk 找更精确的上下文片段。
+     * 优先同页/同章节/父子关系命中，拿不到足够线索时宁缺毋滥，避免展示同文件里的无关片段。
+     */
+    public List<EsDocumentChunk> findSiblings(EsDocumentChunk target, int limit) throws Exception {
+        if (target == null || limit <= 0) {
+            return List.of();
+        }
+        String filename = metadataString(target, ChunkMetadataKeys.FILENAME);
+        Integer pageNumber = metadataInteger(target, ChunkMetadataKeys.PAGE_NUMBER);
+        if (filename == null || filename.isBlank()) {
+            return List.of();
+        }
+
+        int candidateLimit = pageNumber != null ? Math.max(limit * 12, 60) : Math.max(limit * 20, 200);
+        List<EsDocumentChunk> candidates = findCandidates(filename, pageNumber, candidateLimit);
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        return candidates.stream()
+                .filter(candidate -> !sameChunk(target, candidate))
+                .map(candidate -> Map.entry(candidate, scoreSibling(target, candidate)))
+                .filter(entry -> entry.getValue() > 0)
+                .sorted(Comparator.<Map.Entry<EsDocumentChunk, Integer>>comparingInt(Map.Entry::getValue).reversed()
+                        .thenComparing(entry -> metadataInteger(entry.getKey(), ChunkMetadataKeys.PAGE_NUMBER),
+                                Comparator.nullsLast(Integer::compareTo))
+                        .thenComparing(entry -> entry.getKey().getId(), Comparator.nullsLast(String::compareTo)))
+                .limit(limit)
+                .map(Map.Entry::getKey)
+                .toList();
+    }
+
+    private int scoreSibling(EsDocumentChunk target, EsDocumentChunk candidate) {
+        int score = 0;
+
+        String targetChunkId = effectiveChunkId(target);
+        String candidateChunkId = effectiveChunkId(candidate);
+        String targetParentId = metadataString(target, ChunkMetadataKeys.PARENT_CHUNK_ID);
+        String candidateParentId = metadataString(candidate, ChunkMetadataKeys.PARENT_CHUNK_ID);
+
+        if (targetChunkId != null && targetChunkId.equals(candidateParentId)) {
+            score += 1200;
+        }
+        if (candidateChunkId != null && candidateChunkId.equals(targetParentId)) {
+            score += 1200;
+        }
+        if (targetParentId != null && targetParentId.equals(candidateParentId)) {
+            score += 900;
+        }
+        if (containsChildChunkId(target, candidateChunkId) || containsChildChunkId(candidate, targetChunkId)) {
+            score += 1000;
+        }
+
+        Integer targetPage = metadataInteger(target, ChunkMetadataKeys.PAGE_NUMBER);
+        Integer candidatePage = metadataInteger(candidate, ChunkMetadataKeys.PAGE_NUMBER);
+        if (targetPage != null && candidatePage != null) {
+            if (targetPage.equals(candidatePage)) {
+                score += 700;
+            } else {
+                int delta = Math.abs(targetPage - candidatePage);
+                if (delta == 1) {
+                    score += 160;
+                } else if (delta == 2) {
+                    score += 80;
+                }
+            }
+        }
+
+        String targetSection = metadataString(target, ChunkMetadataKeys.SECTION_PATH);
+        String candidateSection = metadataString(candidate, ChunkMetadataKeys.SECTION_PATH);
+        if (sameNormalized(targetSection, candidateSection)) {
+            score += 520;
+        }
+
+        String targetType = metadataString(target, ChunkMetadataKeys.CHUNK_TYPE);
+        String candidateType = metadataString(candidate, ChunkMetadataKeys.CHUNK_TYPE);
+        if (sameNormalized(targetType, candidateType)) {
+            score += 240;
+        }
+
+        String targetProfile = metadataString(target, ChunkMetadataKeys.CHUNK_PROFILE);
+        String candidateProfile = metadataString(candidate, ChunkMetadataKeys.CHUNK_PROFILE);
+        if (sameNormalized(targetProfile, candidateProfile)) {
+            score += 120;
+        }
+
+        String targetSourceType = metadataString(target, ChunkMetadataKeys.SOURCE_TYPE);
+        String candidateSourceType = metadataString(candidate, ChunkMetadataKeys.SOURCE_TYPE);
+        if (sameNormalized(targetSourceType, candidateSourceType)) {
+            score += 80;
+        }
+
+        if (sharedContentHint(target, candidate)) {
+            score += 60;
+        }
+        return score;
+    }
+
+    private boolean sameChunk(EsDocumentChunk left, EsDocumentChunk right) {
+        if (left == null || right == null) {
+            return false;
+        }
+        if (left.getId() != null && left.getId().equals(right.getId())) {
+            return true;
+        }
+        String leftChunkId = effectiveChunkId(left);
+        String rightChunkId = effectiveChunkId(right);
+        return leftChunkId != null && leftChunkId.equals(rightChunkId);
+    }
+
+    private String effectiveChunkId(EsDocumentChunk chunk) {
+        if (chunk == null) {
+            return null;
+        }
+        String metadataChunkId = metadataString(chunk, ChunkMetadataKeys.CHUNK_ID);
+        if (metadataChunkId != null && !metadataChunkId.isBlank()) {
+            return metadataChunkId;
+        }
+        return chunk.getId();
+    }
+
+    private boolean containsChildChunkId(EsDocumentChunk chunk, String childChunkId) {
+        if (chunk == null || childChunkId == null || childChunkId.isBlank()) {
+            return false;
+        }
+        Map<String, Object> metadata = chunk.getMetadata();
+        if (metadata == null) {
+            return false;
+        }
+        Object childChunkIds = metadata.get(ChunkMetadataKeys.CHILD_CHUNK_IDS);
+        if (!(childChunkIds instanceof List<?> list)) {
+            return false;
+        }
+        return list.stream().filter(item -> item != null).map(Object::toString).anyMatch(childChunkId::equals);
+    }
+
+    private String metadataString(EsDocumentChunk chunk, String key) {
+        if (chunk == null || chunk.getMetadata() == null) {
+            return null;
+        }
+        Object value = chunk.getMetadata().get(key);
+        return value == null ? null : value.toString();
+    }
+
+    private Integer metadataInteger(EsDocumentChunk chunk, String key) {
+        if (chunk == null || chunk.getMetadata() == null) {
+            return null;
+        }
+        Object value = chunk.getMetadata().get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(value.toString());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private boolean sameNormalized(String left, String right) {
+        return normalize(left).equals(normalize(right)) && !normalize(left).isEmpty();
+    }
+
+    private String normalize(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        return text.replaceAll("\\s+", " ").trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean sharedContentHint(EsDocumentChunk target, EsDocumentChunk candidate) {
+        String targetText = normalize(target == null ? null : target.getContent());
+        String candidateText = normalize(candidate == null ? null : candidate.getContent());
+        if (targetText.isEmpty() || candidateText.isEmpty()) {
+            return false;
+        }
+        String prefix = targetText.substring(0, Math.min(24, targetText.length()));
+        return prefix.length() >= 8 && candidateText.contains(prefix);
     }
 
     /**
