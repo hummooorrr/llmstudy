@@ -28,6 +28,9 @@ public class ProRagRerankUtil {
     @Value("${pro-rag.rerank.enabled:true}")
     private boolean rerankEnabled;
 
+    @Value("${pro-rag.models.rerank}")
+    private String rerankModel;
+
     @Autowired
     private RetrievalProperties retrievalProperties;
 
@@ -238,7 +241,7 @@ public class ProRagRerankUtil {
         headers.setContentType(MediaType.APPLICATION_JSON);
 
         Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", "rerank");
+        requestBody.put("model", rerankModel);
         requestBody.put("query", query);
         requestBody.put("documents", documents);
         requestBody.put("top_n", topK);

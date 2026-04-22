@@ -35,6 +35,9 @@ public class VisionModelService {
     @Value("${spring.ai.zhipuai.api-key}")
     private String apiKey;
 
+    @Value("${pro-rag.models.vision}")
+    private String visionModel;
+
     private ChatModel visionChatModel;
 
     @PostConstruct
@@ -46,7 +49,7 @@ public class VisionModelService {
                 .build();
 
         ZhiPuAiChatOptions visionOptions = ZhiPuAiChatOptions.builder()
-                .model("glm-4.6v-flash")
+                .model(visionModel)
                 .build();
 
         this.visionChatModel = new ZhiPuAiChatModel(zhiPuAiApi, visionOptions,

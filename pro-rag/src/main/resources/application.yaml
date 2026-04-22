@@ -12,11 +12,11 @@ spring:
       api-key: ${ZHIPU_API_KEY:}
       embedding:
         options:
-          model: ${PRO_RAG_EMBEDDING_MODEL:embedding-3}
+          model: ${pro-rag.models.embedding}
           dimensions: ${PRO_RAG_EMBEDDING_DIMENSIONS:2048}
       chat:
         options:
-          model: ${PRO_RAG_CHAT_MODEL:glm-5.1}
+          model: ${pro-rag.models.chat}
     vectorstore:
       pgvector:
         # 向量索引类型
@@ -40,6 +40,11 @@ spring.servlet.multipart:
 
 # 文件上传目录
 pro-rag:
+  models:
+    chat: ${PRO_RAG_CHAT_MODEL:glm-5.1}
+    embedding: ${PRO_RAG_EMBEDDING_MODEL:embedding-3}
+    vision: ${PRO_RAG_VISION_MODEL:glm-4.6v}
+    rerank: ${PRO_RAG_RERANK_MODEL:rerank}
   upload-dir: ${PRO_RAG_UPLOAD_DIR:./pro-rag-files}
   generated-dir: ${PRO_RAG_GENERATED_DIR:./pro-rag-generated}
   cleanup:
