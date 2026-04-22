@@ -27,6 +27,13 @@ vim .env
 - `ZHIPU_API_KEY`
 - `PG_PASSWORD`
 
+常用模型相关配置也建议一并确认：
+
+- `PRO_RAG_CHAT_MODEL`：问答 / 改写使用的聊天模型，默认 `glm-5.1`
+- `PRO_RAG_EMBEDDING_MODEL`：向量化使用的 embedding 模型，默认 `embedding-3`
+- `PRO_RAG_VISION_MODEL`：图片 / 扫描 PDF 识别使用的视觉模型，默认 `glm-4.6v`
+- `PRO_RAG_RERANK_MODEL`：检索结果精排使用的 rerank 模型，默认 `rerank`
+
 ## 3. 生成 Basic Auth 账号密码
 
 先创建放密码文件的目录：
