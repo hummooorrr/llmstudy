@@ -1,6 +1,5 @@
 package cn.wzw.llm.study.llmstudy.controller;
 
-import cn.wzw.llm.study.llmstudy.config.DomainPromptConfig;
 import cn.wzw.llm.study.llmstudy.config.ProRagConfiguration;
 import cn.wzw.llm.study.llmstudy.dto.generate.GeneratedFileResult;
 import cn.wzw.llm.study.llmstudy.dto.ingestion.UploadedDocumentResult;
@@ -14,10 +13,10 @@ import cn.wzw.llm.study.llmstudy.output.ProRagTemplateOutputService;
 import cn.wzw.llm.study.llmstudy.output.RenderedTemplateOutput;
 import cn.wzw.llm.study.llmstudy.service.ProRagDocumentIngestionService;
 import cn.wzw.llm.study.llmstudy.service.ProRagRetrievalService;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.ContentDisposition;
@@ -64,10 +63,10 @@ public class ProRagGenerateController {
     private ProRagTemplateOutputService proRagTemplateOutputService;
 
     @Autowired
-    private DomainPromptConfig domainPromptConfig;
+    private ConversationMetaService conversationMetaService;
 
     @Autowired
-    private ConversationMetaService conversationMetaService;
+    private ProRagControllerSupport support;
 
     @Value("${pro-rag.generated-dir:./pro-rag-generated}")
     private String generatedDir;
@@ -82,10 +81,10 @@ public class ProRagGenerateController {
             @RequestParam(value = "directiveFilename", required = false) String directiveFilename,
             @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) throws Exception {
-        String normalizedChatId = normalizeChatId(chatId);
+        String normalizedChatId = support.normalizeChatId(chatId, "gen-");
         conversationMetaService.touch(normalizedChatId, ConversationScope.GENERATE, domain, instruction);
         GenerationReferenceBundle referenceBundle = proRagRetrievalService.retrieveReferenceBundle(instruction, directiveFilename);
-        String userMessage = buildUserMessage(instruction, referenceBundle, domain);
+        String userMessage = support.buildGenerateUserMessage(instruction, referenceBundle, domain);
         ChatClient generateChatClient = proRagConfiguration.getGenerateChatClient();
         return generateChatClient.prompt()
                 .user(userMessage)
@@ -110,7 +109,7 @@ public class ProRagGenerateController {
             @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) throws Exception {
         return createGeneratedFile(
-                normalizeChatId(chatId), instruction, directiveFilename,
+                support.normalizeChatId(chatId, "gen-"), instruction, directiveFilename,
                 outputFilename, outputFormat, templateName, documentTitle,
                 null, domain
         );
@@ -132,24 +131,10 @@ public class ProRagGenerateController {
     ) throws Exception {
         UploadedDocumentResult uploadResult = proRagDocumentIngestionService.upload(file);
         return createGeneratedFile(
-                normalizeChatId(chatId), instruction, uploadResult.storedFilename(),
+                support.normalizeChatId(chatId, "gen-"), instruction, uploadResult.storedFilename(),
                 outputFilename, outputFormat, templateName, documentTitle,
                 uploadResult, domain
         );
-    }
-
-    /**
-     * 为文档生成场景统一 chatId：前端没带 scope 前缀时自动补 gen-。
-     */
-    private String normalizeChatId(String chatId) {
-        if (!StringUtils.hasText(chatId)) {
-            throw new IllegalArgumentException("chatId 不能为空");
-        }
-        String trimmed = chatId.trim();
-        if (trimmed.startsWith("chat-") || trimmed.startsWith("gen-")) {
-            return trimmed;
-        }
-        return "gen-" + trimmed;
     }
 
     /**
@@ -208,7 +193,6 @@ public class ProRagGenerateController {
                 outputFilename
         );
 
-        // 用真实消息数 / 2 近似成"版本号"（每轮 user+assistant 算一版，1-based）
         conversationMetaService.touch(chatId, ConversationScope.GENERATE, domain, instruction);
         int messageCount = conversationMetaService.countMessages(chatId);
         int version = Math.max(1, (int) Math.ceil(messageCount / 2.0));
@@ -231,23 +215,10 @@ public class ProRagGenerateController {
     private String generateContent(String chatId, String instruction, GenerationReferenceBundle referenceBundle, String domain) throws Exception {
         ChatClient generateChatClient = proRagConfiguration.getGenerateChatClient();
         return generateChatClient.prompt()
-                .user(buildUserMessage(instruction, referenceBundle, domain))
+                .user(support.buildGenerateUserMessage(instruction, referenceBundle, domain))
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 .call()
                 .content();
-    }
-
-    private String buildUserMessage(String instruction, GenerationReferenceBundle referenceBundle, String domain) {
-        if (!StringUtils.hasText(instruction)) {
-            throw new IllegalArgumentException("instruction 不能为空");
-        }
-
-        List<String> mergedContents = referenceBundle.contents();
-        String documentContent = mergedContents.isEmpty()
-                ? "未检索到匹配材料，请根据已有要求输出基础框架，并把缺失信息标记为待补充。"
-                : String.join("\n\n=========文档分隔线===========\n\n", mergedContents);
-        String generatePrompt = domainPromptConfig.getDomain(domain).generatePrompt();
-        return String.format(generatePrompt, documentContent, instruction.trim());
     }
 
     private DocumentTemplateContext buildTemplateContext(
@@ -284,7 +255,7 @@ public class ProRagGenerateController {
         if (StringUtils.hasText(directiveFilename)) {
             return directiveFilename.replaceAll("\\.[^.]+$", "") + "_生成稿";
         }
-        String defaultName = domainPromptConfig.getDomain(domain).defaultFileName();
+        String defaultName = support.getDefaultFileName(domain);
         return defaultName + "_" + LocalDateTime.now().format(FILE_TIME_FORMATTER);
     }
 

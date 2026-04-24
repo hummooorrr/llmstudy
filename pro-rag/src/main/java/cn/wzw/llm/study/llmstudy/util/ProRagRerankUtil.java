@@ -2,46 +2,32 @@ package cn.wzw.llm.study.llmstudy.util;
 
 import cn.wzw.llm.study.llmstudy.config.RetrievalProperties;
 import cn.wzw.llm.study.llmstudy.model.EsDocumentChunk;
+import cn.wzw.llm.study.llmstudy.rerank.RerankProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
-/** Pro-Rag 检索结果重排序工具：提供 RRF 融合、文件级聚合和智谱 Rerank 精排三种策略 */
+/**
+ * Pro-Rag 检索结果重排序工具：提供 RRF 融合、文件级聚合和 Rerank 精排三种策略。
+ * Rerank 精排通过 {@link RerankProvider} 接口调用，支持灵活切换供应商。
+ */
 @Slf4j
 @Component
 public class ProRagRerankUtil {
 
-    @Value("${spring.ai.zhipuai.api-key}")
-    private String apiKey;
-
     @Value("${pro-rag.rerank.enabled:true}")
     private boolean rerankEnabled;
-
-    @Value("${pro-rag.models.rerank}")
-    private String rerankModel;
 
     @Autowired
     private RetrievalProperties retrievalProperties;
 
-    private final RestTemplate rerankRestTemplate;
-
-    public ProRagRerankUtil() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(5000);
-        factory.setReadTimeout(10000);
-        this.rerankRestTemplate = new RestTemplate(factory);
-    }
+    @Autowired(required = false)
+    private RerankProvider rerankProvider;
 
     /**
      * 融合后每个候选的完整信息：用于让上游同时拿到"LLM 可见顺序"和"docId + metadata"。
@@ -70,9 +56,15 @@ public class ProRagRerankUtil {
      */
     public List<FusedChunk> hybridFusionDetailed(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
                                                  String query, int topK) {
-        if (rerankEnabled) {
+        // Step 1: RRF 粗排，候选池要比 topK 大，给 Rerank 留充足的重排空间
+        int candidatePoolSize = Math.max(topK,
+                retrievalProperties.getRerank().getCandidatePoolSize());
+        List<FusedChunk> rrfCandidates = rrfFusionDetailed(vectorDocs, keywordDocs, candidatePoolSize);
+
+        // Step 2: Rerank 精排（如果启用且有 provider），从候选池中挑出 topK
+        if (rerankEnabled && rerankProvider != null) {
             try {
-                List<FusedChunk> result = rerankFusionDetailed(vectorDocs, keywordDocs, query, topK);
+                List<FusedChunk> result = rerankProvider.rerank(rrfCandidates, query, topK);
                 if (!result.isEmpty()) {
                     return result;
                 }
@@ -81,7 +73,8 @@ public class ProRagRerankUtil {
                 log.warn("Rerank 调用失败，回退到 RRF 融合: {}", e.getMessage());
             }
         }
-        return rrfFusionDetailed(vectorDocs, keywordDocs, topK);
+        // 没启用 Rerank 或 Rerank 失败，截断到 topK 返回
+        return rrfCandidates.size() > topK ? rrfCandidates.subList(0, topK) : rrfCandidates;
     }
 
     /**
@@ -201,119 +194,24 @@ public class ProRagRerankUtil {
     }
 
     /**
-     * 使用智谱 rerank 重排序
+     * 使用 RerankProvider 重排序（如果已注入）。
+     *
+     * @deprecated 请使用 {@link #hybridFusionDetailed}，该方法内部自动调用 RerankProvider
      */
+    @Deprecated
     public List<String> rerankFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
                                      String query, int topK) throws Exception {
-        return rerankFusionDetailed(vectorDocs, keywordDocs, query, topK).stream()
+        return hybridFusionDetailed(vectorDocs, keywordDocs, query, topK).stream()
                 .map(FusedChunk::text)
                 .collect(Collectors.toList());
     }
 
     /**
-     * 智谱 rerank 的 detailed 版本：用入参索引回溯 docId，保证 prompt 顺序和 references 一致。
+     * @deprecated 请使用 {@link #hybridFusionDetailed}，该方法内部自动调用 RerankProvider
      */
+    @Deprecated
     public List<FusedChunk> rerankFusionDetailed(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs,
                                                  String query, int topK) throws Exception {
-        Map<String, String> idToContent = new LinkedHashMap<>();
-        Map<String, Map<String, Object>> idToMeta = new LinkedHashMap<>();
-
-        vectorDocs.forEach(doc -> {
-            idToContent.putIfAbsent(doc.getId(), doc.getText());
-            idToMeta.putIfAbsent(doc.getId(), doc.getMetadata());
-        });
-
-        keywordDocs.forEach(doc -> {
-            idToContent.putIfAbsent(doc.getId(), doc.getContent());
-            idToMeta.putIfAbsent(doc.getId(), doc.getMetadata());
-        });
-
-        List<String> orderedIds = new ArrayList<>(idToContent.keySet());
-        List<String> documents = new ArrayList<>(idToContent.values());
-        if (documents.isEmpty()) {
-            log.info("没有检索到任何文档，无需重排序");
-            return Collections.emptyList();
-        }
-
-        String url = "https://open.bigmodel.cn/api/paas/v4/rerank";
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + apiKey);
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", rerankModel);
-        requestBody.put("query", query);
-        requestBody.put("documents", documents);
-        requestBody.put("top_n", topK);
-        requestBody.put("return_documents", true);
-
-        HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-
-        ResponseEntity<Map> response = rerankRestTemplate.postForEntity(url, request, Map.class);
-
-        if (!response.getStatusCode().is2xxSuccessful()) {
-            throw new RuntimeException("重排序API调用失败: " + response.getStatusCode() + "，响应: " + response.getBody());
-        }
-
-        Map<String, Object> responseBody = response.getBody();
-        if (responseBody == null || !responseBody.containsKey("results")) {
-            throw new RuntimeException("API响应格式异常，缺少results字段: " + responseBody);
-        }
-
-        List<Map<String, Object>> rerankedResults = (List<Map<String, Object>>) responseBody.get("results");
-        if (rerankedResults == null || rerankedResults.isEmpty()) {
-            log.warn("重排序返回空结果: {}", responseBody);
-            return Collections.emptyList();
-        }
-
-        List<FusedChunk> result = new ArrayList<>();
-        List<String> rankLogs = new ArrayList<>();
-
-        for (int rank = 0; rank < rerankedResults.size(); rank++) {
-            Map<String, Object> item = rerankedResults.get(rank);
-            double score = item.containsKey("relevance_score")
-                    ? ((Number) item.get("relevance_score")).doubleValue()
-                    : 0.0;
-
-            String docId = resolveRerankDocId(item, orderedIds, idToContent);
-            if (docId == null) {
-                continue;
-            }
-
-            String text = idToContent.get(docId);
-            if (text == null) {
-                continue;
-            }
-            result.add(new FusedChunk(docId, text, idToMeta.get(docId), score));
-            rankLogs.add(String.format("排名 %d: docId=%s, 分数=%.4f", rank + 1, docId, score));
-        }
-
-        log.info("智谱rerank重排序结果：{}", String.join("; ", rankLogs));
-        log.info("重排序后返回{}条文档，原始合并{}条", result.size(), documents.size());
-
-        return result;
-    }
-
-    /**
-     * 优先按 API 返回的 index 字段回溯 docId（最稳），失败才按内容精确匹配兜底。
-     */
-    private String resolveRerankDocId(Map<String, Object> rerankItem, List<String> orderedIds,
-                                      Map<String, String> idToContent) {
-        Object idxValue = rerankItem.get("index");
-        if (idxValue instanceof Number numIdx) {
-            int i = numIdx.intValue();
-            if (i >= 0 && i < orderedIds.size()) {
-                return orderedIds.get(i);
-            }
-        }
-        Object docValue = rerankItem.get("document");
-        if (docValue instanceof String text) {
-            for (Map.Entry<String, String> entry : idToContent.entrySet()) {
-                if (entry.getValue().equals(text)) {
-                    return entry.getKey();
-                }
-            }
-        }
-        return null;
+        return hybridFusionDetailed(vectorDocs, keywordDocs, query, topK);
     }
 }

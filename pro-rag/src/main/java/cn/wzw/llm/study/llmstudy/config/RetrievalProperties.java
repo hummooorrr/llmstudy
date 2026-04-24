@@ -54,10 +54,17 @@ public class RetrievalProperties {
     public static class Rerank {
         private int rrfK = 60;
         private int finalTopK = 8;
+        /**
+         * Rerank 候选池大小：RRF 粗排保留多少条进入精排。
+         * 必须 ≥ finalTopK；语义精排在更大候选池里挑选效果更好（推荐 finalTopK 的 3~5 倍）。
+         */
+        private int candidatePoolSize = 24;
 
         public int getRrfK() { return rrfK; }
         public void setRrfK(int rrfK) { this.rrfK = rrfK; }
         public int getFinalTopK() { return finalTopK; }
         public void setFinalTopK(int finalTopK) { this.finalTopK = finalTopK; }
+        public int getCandidatePoolSize() { return candidatePoolSize; }
+        public void setCandidatePoolSize(int candidatePoolSize) { this.candidatePoolSize = candidatePoolSize; }
     }
 }

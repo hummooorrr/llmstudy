@@ -14,6 +14,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -25,10 +26,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * 统一封装定位和生成场景下的混合检索逻辑。
  * 对用户问题做轻量扩展后，再执行向量检索与关键词检索并去重融合。
+ * <p>
+ * 支持检索结果缓存（Caffeine 本地缓存）和 parent-child 上下文扩展。
  */
 @Service
 @Slf4j
@@ -49,7 +53,29 @@ public class ProRagRetrievalService {
     @Autowired
     private RetrievalProperties retrievalProperties;
 
+    @Autowired(required = false)
+    private RetrievalCacheService retrievalCacheService;
+
+    @Value("${pro-rag.retrieval.parent-context-enabled:true}")
+    private boolean parentContextEnabled;
+
+    /** 子 chunk 短于该字符数时才附加父 chunk 上下文，避免 prompt 冗余膨胀 */
+    @Value("${pro-rag.retrieval.parent-context-child-max-chars:600}")
+    private int parentContextChildMaxChars;
+
+    /** 父 chunk 附加时的最大字符数，超出则截断 */
+    @Value("${pro-rag.retrieval.parent-context-max-chars:1500}")
+    private int parentContextMaxChars;
+
     public List<LocateResultItem> locateFiles(String query) throws Exception {
+        String cacheKey = retrievalCacheService != null ? RetrievalCacheService.buildLocateKey(query) : null;
+        if (cacheKey != null) {
+            List<LocateResultItem> cached = retrievalCacheService.getLocate(cacheKey);
+            if (cached != null) {
+                return cached;
+            }
+        }
+
         QueryBundle bundle = buildQueries(query);
         RetrievalProperties.Locate locateCfg = retrievalProperties.getLocate();
         List<SearchHit> vectorHits = searchVectorHits(bundle.vectorQueries(), null,
@@ -64,13 +90,45 @@ public class ProRagRetrievalService {
                 .computeIfAbsent(hit.filePath(), key -> new FileLocateAccumulator(hit.filePath(), hit.filename()))
                 .addHit(hit));
 
-        return groupedFiles.values().stream()
+        List<LocateResultItem> result = groupedFiles.values().stream()
                 .sorted(Comparator.comparingDouble(FileLocateAccumulator::score).reversed())
                 .map(FileLocateAccumulator::toResult)
                 .toList();
+
+        if (cacheKey != null) {
+            retrievalCacheService.putLocate(cacheKey, result);
+        }
+
+        return result;
     }
 
     public GenerationReferenceBundle retrieveReferenceBundle(String query, String directiveFilename) throws Exception {
+        int finalTopK = retrievalProperties.getRerank().getFinalTopK();
+
+        String cacheKey = retrievalCacheService != null
+                ? RetrievalCacheService.buildRetrievalKey(query, directiveFilename,
+                        retrievalProperties.getVectorTopK(),
+                        retrievalProperties.getKeywordTopK(),
+                        retrievalProperties.getSimilarityThreshold(),
+                        finalTopK)
+                : null;
+        if (cacheKey != null) {
+            GenerationReferenceBundle cached = retrievalCacheService.getRetrieval(cacheKey);
+            if (cached != null) {
+                return cached;
+            }
+        }
+
+        GenerationReferenceBundle bundle = doRetrieveReferenceBundle(query, directiveFilename, finalTopK);
+
+        if (cacheKey != null) {
+            retrievalCacheService.putRetrieval(cacheKey, bundle);
+        }
+
+        return bundle;
+    }
+
+    private GenerationReferenceBundle doRetrieveReferenceBundle(String query, String directiveFilename, int finalTopK) throws Exception {
         QueryBundle bundle = buildQueries(query);
         List<Document> vectorDocs = searchVector(bundle.vectorQueries(), null,
                 retrievalProperties.getVectorTopK(), retrievalProperties.getSimilarityThreshold());
@@ -88,7 +146,6 @@ public class ProRagRetrievalService {
 
         // 用 detailed 版本一次性拿到"融合后的顺序 + docId + metadata"，
         // 保证 contents 与 referenceMaterials 的条目数、排序严格一致，LLM 输出的 [^cN] 永远能命中前端卡片。
-        int finalTopK = retrievalProperties.getRerank().getFinalTopK();
         List<ProRagRerankUtil.FusedChunk> fused = proRagRerankUtil.hybridFusionDetailed(
                 vectorDocs, keywordDocs, bundle.originalQuery(), finalTopK);
 
@@ -96,11 +153,51 @@ public class ProRagRetrievalService {
         List<ReferenceMaterial> referenceMaterials = new ArrayList<>(fused.size());
         int refIdx = 1;
         for (ProRagRerankUtil.FusedChunk chunk : fused) {
-            contents.add(chunk.text());
+            String content = chunk.text();
+            // Small-to-Big: 如果有父 chunk，附加上下文
+            if (parentContextEnabled) {
+                content = enrichWithParentContext(chunk, content);
+            }
+            contents.add(content);
             referenceMaterials.add(buildReferenceMaterial(chunk, refIdx, bundle.originalQuery()));
             refIdx++;
         }
         return new GenerationReferenceBundle(contents, referenceMaterials);
+    }
+
+    /**
+     * Small-to-Big 检索：如果 chunk 有父 chunkId，从 ES 查父 chunk 全文做附加上下文。
+     * 仅在子 chunk 足够短时才附加，且父文本会做长度截断，避免 prompt 体积失控。
+     */
+    private String enrichWithParentContext(ProRagRerankUtil.FusedChunk chunk, String originalText) {
+        Map<String, Object> metadata = chunk.metadata();
+        if (metadata == null) {
+            return originalText;
+        }
+        // 子 chunk 已经足够长时，多半本身就包含主要语义，没必要再拼父块
+        if (originalText != null && originalText.length() >= parentContextChildMaxChars) {
+            return originalText;
+        }
+        Object parentId = metadata.get(ChunkMetadataKeys.PARENT_CHUNK_ID);
+        if (parentId == null || !StringUtils.hasText(parentId.toString())) {
+            return originalText;
+        }
+        try {
+            Optional<EsDocumentChunk> parentChunk = proRagElasticSearchService.findById(parentId.toString());
+            if (parentChunk.isPresent() && StringUtils.hasText(parentChunk.get().getContent())) {
+                String parentText = parentChunk.get().getContent().trim();
+                if (parentText.isEmpty() || originalText.contains(parentText)) {
+                    return originalText;
+                }
+                String truncated = parentText.length() > parentContextMaxChars
+                        ? parentText.substring(0, parentContextMaxChars) + "…"
+                        : parentText;
+                return originalText + "\n\n[上下文] " + truncated;
+            }
+        } catch (Exception e) {
+            log.debug("查询父 chunk 失败 docId={} parentId={}: {}", chunk.docId(), parentId, e.getMessage());
+        }
+        return originalText;
     }
 
     private ReferenceMaterial buildReferenceMaterial(ProRagRerankUtil.FusedChunk chunk, int refIdx, String originalQuery) {

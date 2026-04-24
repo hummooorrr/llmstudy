@@ -17,6 +17,9 @@ public class ParsingProperties {
     /** 图片最小边长像素（低于阈值的图标 / 装饰元素跳过不入库） */
     private int minImageDimension = 80;
 
+    /** VL 模型并发上限（共享信号量，控制扫描整页和单张图片 VL 调用的总并发数） */
+    private int visionMaxConcurrency = 3;
+
     /** 图片 VL 描述 prompt */
     private String imagePrompt = "请用 1-2 句话简要描述这张图片的内容要点，如果是图表请说明核心趋势或结论，如果包含文字请提取关键文字。";
 
@@ -31,6 +34,8 @@ public class ParsingProperties {
     public void setMinImageDimension(int minImageDimension) { this.minImageDimension = minImageDimension; }
     public String getImagePrompt() { return imagePrompt; }
     public void setImagePrompt(String imagePrompt) { this.imagePrompt = imagePrompt; }
+    public int getVisionMaxConcurrency() { return visionMaxConcurrency; }
+    public void setVisionMaxConcurrency(int visionMaxConcurrency) { this.visionMaxConcurrency = visionMaxConcurrency; }
     public String getScannedPagePrompt() { return scannedPagePrompt; }
     public void setScannedPagePrompt(String scannedPagePrompt) { this.scannedPagePrompt = scannedPagePrompt; }
 }
