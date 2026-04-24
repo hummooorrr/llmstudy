@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -21,6 +22,7 @@ public class QuestionRewriteService {
     public record QueryRouteResult(QueryStrategy strategy, List<String> subQueries, String hypotheticalAnswer) {}
 
     @Autowired
+    @Qualifier("openAiChatModel")
     private ChatModel chatModel;
 
     //分解提示词
