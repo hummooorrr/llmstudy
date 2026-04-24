@@ -11,6 +11,8 @@ spring:
   ai:
     zhipuai:
       api-key: ${ZHIPU_API_KEY:}
+      chat:
+        enabled: false
       embedding:
         options:
           model: ${pro-rag.models.embedding}
@@ -18,6 +20,8 @@ spring:
     openai:
       api-key: ${DEEPSEEK_API_KEY:${ZHIPU_API_KEY:}}
       base-url: https://api.deepseek.com
+      embedding:
+        enabled: false
       chat:
         options:
           model: ${pro-rag.models.chat}
