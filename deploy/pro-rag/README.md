@@ -164,7 +164,7 @@ curl -u USER:PASS -X POST \
 - `PRO_RAG_STRUCTURED_PARSE_ENABLED=true`：PDF/DOCX 会额外抽取表格 → Markdown、图片 → VL 描述，带来每份文档数次到十几次视觉模型调用。关掉后走纯文本切分流程，成本最低。
 - `PRO_RAG_MAX_IMAGES_PER_DOC=20`：单份文档抽取图片数上限。像目录图、水印图、装饰图多的 PDF 可以调小（比如 5）限制 VL 费用。
 
-修改 `.env` 后只需 `docker compose restart app` 生效。
+修改 `.env` 后只需 `docker compose up -d app` 生效。
 
 ## 9. 对话记忆相关运维
 

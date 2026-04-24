@@ -4,12 +4,10 @@ import cn.wzw.llm.study.llmstudy.dto.ingestion.UploadedDocumentResult;
 import cn.wzw.llm.study.llmstudy.model.ChunkMetadataKeys;
 import cn.wzw.llm.study.llmstudy.model.ChunkType;
 import cn.wzw.llm.study.llmstudy.model.EsDocumentChunk;
-import cn.wzw.llm.study.llmstudy.service.pdf.PdfIngestionPipeline;
 import cn.wzw.llm.study.llmstudy.splitter.SplitterFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.ai.document.Document;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -19,6 +17,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -29,6 +28,8 @@ import java.util.UUID;
 /**
  * 文件接收、分片和入库服务。
  * 把上传落盘、切分和双写存储集中到一个地方，便于复用到"上传即生成"等场景。
+ * <p>
+ * 通过 {@link DocumentIngestionPipeline} 列表实现可扩展的文件格式处理。
  */
 @Service
 @Slf4j
@@ -37,23 +38,24 @@ public class ProRagDocumentIngestionService {
     @Value("${pro-rag.upload-dir:./pro-rag-files}")
     private String uploadDir;
 
-    @Autowired
-    private DocumentReaderStrategySelector documentReaderStrategySelector;
+    private final DocumentReaderStrategySelector documentReaderStrategySelector;
+    private final EmbeddingService embeddingService;
+    private final ProRagElasticSearchService proRagElasticSearchService;
+    private final SplitterFactory splitterFactory;
+    private final List<DocumentIngestionPipeline> ingestionPipelines;
 
-    @Autowired
-    private EmbeddingService embeddingService;
-
-    @Autowired
-    private ProRagElasticSearchService proRagElasticSearchService;
-
-    @Autowired
-    private SplitterFactory splitterFactory;
-
-    @Autowired
-    private PdfIngestionPipeline pdfIngestionPipeline;
-
-    @Autowired
-    private DocxIngestionPipeline docxIngestionPipeline;
+    public ProRagDocumentIngestionService(
+            DocumentReaderStrategySelector documentReaderStrategySelector,
+            EmbeddingService embeddingService,
+            ProRagElasticSearchService proRagElasticSearchService,
+            SplitterFactory splitterFactory,
+            List<DocumentIngestionPipeline> ingestionPipelines) {
+        this.documentReaderStrategySelector = documentReaderStrategySelector;
+        this.embeddingService = embeddingService;
+        this.proRagElasticSearchService = proRagElasticSearchService;
+        this.splitterFactory = splitterFactory;
+        this.ingestionPipelines = ingestionPipelines;
+    }
 
     public UploadedDocumentResult upload(MultipartFile file) throws Exception {
         return upload(file, null);
@@ -80,23 +82,7 @@ public class ProRagDocumentIngestionService {
             throw new IllegalArgumentException("文件解析后没有可入库内容: " + originalFilename);
         }
 
-        List<EsDocumentChunk> esDocs = toEsDocs(chunks);
-
-        boolean vectorStored = false;
-        boolean esStored = false;
-        try {
-            embeddingService.embedAndStore(chunks);
-            vectorStored = true;
-            proRagElasticSearchService.bulkIndex(esDocs);
-            esStored = true;
-        } catch (Exception e) {
-            log.error("文档入库失败: {}", e.getMessage(), e);
-            if (vectorStored && !esStored) {
-                log.error("向量库已写入但 ES 索引失败，需手动补录 {} 条 chunk，文件: {}",
-                        esDocs.size(), originalFilename);
-            }
-            throw e;
-        }
+        writeToStores(chunks, originalFilename, storedPath);
 
         return new UploadedDocumentResult(
                 originalFilename,
@@ -105,6 +91,31 @@ public class ProRagDocumentIngestionService {
                 chunks.size(),
                 "success"
         );
+    }
+
+    /**
+     * 双写向量库和 ES，任意失败都不留下孤儿数据。
+     */
+    private void writeToStores(List<Document> chunks, String originalFilename, Path storedPath) throws Exception {
+        List<EsDocumentChunk> esDocs = toEsDocs(chunks);
+
+        // Step 1: 写向量库
+        embeddingService.embedAndStore(chunks);
+
+        // Step 2: 写 ES，失败时回滚向量库
+        try {
+            proRagElasticSearchService.bulkIndex(esDocs);
+        } catch (Exception e) {
+            log.error("ES 索引失败，回滚向量库数据: 文件={}, chunk数={}", originalFilename, esDocs.size());
+            List<String> vectorIds = chunks.stream().map(Document::getId).toList();
+            try {
+                embeddingService.deleteByIds(vectorIds);
+                log.info("已回滚向量库 {} 条数据", vectorIds.size());
+            } catch (Exception rollbackEx) {
+                log.error("回滚向量库失败，需手动清理: {}", rollbackEx.getMessage());
+            }
+            throw new RuntimeException("文档入库失败（ES 写入异常，向量数据已回滚）", e);
+        }
     }
 
     private List<EsDocumentChunk> toEsDocs(List<Document> chunks) {
@@ -152,30 +163,37 @@ public class ProRagDocumentIngestionService {
         return sanitized;
     }
 
+    /**
+     * 按注册的 {@link DocumentIngestionPipeline} 列表匹配处理（按 @Order 顺序），
+     * 专用流水线返回空时兜底回退到通用读取器路径，避免极端文件直接丢失。
+     */
     private List<Document> splitDocuments(File localFile, String profileOverride) throws Exception {
-        String fileName = localFile.getName().toLowerCase();
-
-        if (fileName.endsWith(".pdf")) {
-            String profile = StringUtils.hasText(profileOverride) ? profileOverride : SplitterFactory.PROFILE_PDF_TEXT;
-            List<Document> chunks = pdfIngestionPipeline.process(localFile, profile);
+        for (DocumentIngestionPipeline pipeline : ingestionPipelines) {
+            if (!pipeline.supports(localFile)) {
+                continue;
+            }
+            List<Document> chunks = pipeline.process(localFile, profileOverride);
             if (CollectionUtils.isNotEmpty(chunks)) {
                 return chunks;
             }
+            log.warn("专用流水线 {} 解析 {} 返回空，回退到通用读取器",
+                    pipeline.getClass().getSimpleName(), localFile.getName());
+            break;
         }
+        return splitWithGenericReader(localFile, profileOverride);
+    }
 
+    private List<Document> splitWithGenericReader(File localFile, String profileOverride) throws Exception {
+        String fileName = localFile.getName().toLowerCase();
+
+        // Markdown 走专门的 MarkdownHeaderTextSplitter，保留标题层级，便于父子 chunk
         if (fileName.endsWith(".md") || fileName.endsWith(".markdown")) {
             String rawText = Files.readString(localFile.toPath());
             Map<String, Object> metadata = sourceMetadata(localFile);
+            String profile = StringUtils.hasText(profileOverride) ? profileOverride : SplitterFactory.PROFILE_MARKDOWN;
             List<Document> chunks = splitterFactory.split(
-                    List.of(new Document(rawText, metadata)),
-                    StringUtils.hasText(profileOverride) ? profileOverride : SplitterFactory.PROFILE_MARKDOWN
-            );
+                    List.of(new Document(rawText, metadata)), profile);
             return stampDefaultChunkType(chunks, ChunkType.TEXT);
-        }
-
-        if (fileName.endsWith(".doc") || fileName.endsWith(".docx")) {
-            String profile = StringUtils.hasText(profileOverride) ? profileOverride : SplitterFactory.PROFILE_WORD;
-            return docxIngestionPipeline.process(localFile, profile);
         }
 
         List<Document> documents = clean(documentReaderStrategySelector.read(localFile));
@@ -244,10 +262,7 @@ public class ProRagDocumentIngestionService {
             throw new IllegalArgumentException("文件解析后没有可入库内容: " + safeName);
         }
 
-        List<EsDocumentChunk> esDocs = toEsDocs(chunks);
-
-        embeddingService.embedAndStore(chunks);
-        proRagElasticSearchService.bulkIndex(esDocs);
+        writeToStores(chunks, safeName, filePath);
 
         try {
             embeddingService.deleteByIds(oldVectorIds);

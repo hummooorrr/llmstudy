@@ -3,6 +3,8 @@ package cn.wzw.llm.study.llmstudy.output;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import freemarker.template.Configuration;
+import freemarker.template.Template;
 import org.apache.poi.xwpf.usermodel.ParagraphAlignment;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
@@ -13,12 +15,17 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.io.InputStream;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Map;
 
+/**
+ * 文档模板渲染与输出服务。
+ * 使用 FreeMarker 渲染 Markdown 模板，DOCX 使用 JSON block + FreeMarker 内联变量替换。
+ */
 @Service
 public class ProRagTemplateOutputService {
 
@@ -27,10 +34,15 @@ public class ProRagTemplateOutputService {
     @Value("${pro-rag.generated-dir:./pro-rag-generated}")
     private String generatedDir;
 
+    private final Configuration freemarkerConfig;
     private final ResourceLoader resourceLoader;
 
     public ProRagTemplateOutputService(ResourceLoader resourceLoader) {
         this.resourceLoader = resourceLoader;
+        this.freemarkerConfig = new Configuration(Configuration.VERSION_2_3_34);
+        this.freemarkerConfig.setClassLoaderForTemplateLoading(
+                Thread.currentThread().getContextClassLoader(), "/templates/pro-rag");
+        this.freemarkerConfig.setDefaultEncoding("UTF-8");
     }
 
     public RenderedTemplateOutput renderAndSave(
@@ -40,11 +52,12 @@ public class ProRagTemplateOutputService {
             String outputFilename
     ) throws Exception {
         String resolvedTemplateName = StringUtils.hasText(templateName) ? templateName.trim() : DEFAULT_TEMPLATE;
-        String previewContent = renderMarkdownTemplate(context, resolvedTemplateName);
+        String previewContent = renderMarkdown(context, resolvedTemplateName);
 
         Path outputDirectory = Paths.get(generatedDir);
         Files.createDirectories(outputDirectory);
-        Path outputPath = resolveUniqueOutputPath(outputDirectory, resolveOutputFilename(outputFilename, context.documentTitle(), outputFormat));
+        Path outputPath = resolveUniqueOutputPath(outputDirectory,
+                resolveOutputFilename(outputFilename, context.documentTitle(), outputFormat));
 
         if (outputFormat == DocumentOutputFormat.MARKDOWN) {
             Files.writeString(outputPath, previewContent, StandardCharsets.UTF_8);
@@ -61,22 +74,23 @@ public class ProRagTemplateOutputService {
         );
     }
 
-    private String renderMarkdownTemplate(DocumentTemplateContext context, String templateName) throws Exception {
-        String template = readTemplate("classpath:templates/pro-rag/markdown/" + templateName + ".md",
-                "classpath:templates/pro-rag/markdown/" + DEFAULT_TEMPLATE + ".md");
+    private String renderMarkdown(DocumentTemplateContext context, String templateName) throws Exception {
+        Map<String, Object> model = Map.of(
+                "documentTitle", context.documentTitle(),
+                "generatedAt", context.generatedAt(),
+                "directiveFilename", context.directiveFilename(),
+                "instruction", context.instruction(),
+                "referenceFiles", context.referenceFiles(),
+                "body", context.body()
+        );
 
-        return template
-                .replace("${documentTitle}", safeValue(context.documentTitle()))
-                .replace("${generatedAt}", safeValue(context.generatedAt()))
-                .replace("${directiveFilename}", safeValue(context.directiveFilename()))
-                .replace("${instruction}", safeValue(context.instruction()))
-                .replace("${referenceFiles}", safeValue(context.referenceFiles()))
-                .replace("${body}", safeValue(context.body()));
+        return processTemplate("markdown/" + templateName + ".ftl",
+                "markdown/" + DEFAULT_TEMPLATE + ".ftl", model);
     }
 
     private void writeDocxFile(Path outputPath, DocumentTemplateContext context, String templateName) throws Exception {
-        String layoutJson = readTemplate("classpath:templates/pro-rag/docx/" + templateName + ".json",
-                "classpath:templates/pro-rag/docx/" + DEFAULT_TEMPLATE + ".json");
+        String layoutJson = loadTemplateContent("docx/" + templateName + ".json",
+                "docx/" + DEFAULT_TEMPLATE + ".json");
         JSONArray blocks = JSON.parseArray(layoutJson);
 
         try (XWPFDocument document = new XWPFDocument()) {
@@ -97,14 +111,14 @@ public class ProRagTemplateOutputService {
 
     private void renderDocxBlock(XWPFDocument document, String type, JSONObject block, DocumentTemplateContext context) {
         switch (type) {
-            case "title" -> addStyledParagraph(document, resolveInlinePlaceholders(block.getString("text"), context),
+            case "title" -> addStyledParagraph(document, renderInline(block.getString("text"), context),
                     18, true, ParagraphAlignment.CENTER);
-            case "heading1" -> addStyledParagraph(document, resolveInlinePlaceholders(block.getString("text"), context),
+            case "heading1" -> addStyledParagraph(document, renderInline(block.getString("text"), context),
                     14, true, ParagraphAlignment.LEFT);
             case "meta" -> addParagraphLines(document,
-                    safeValue(block.getString("label")) + "：" + resolvePlaceholder(block.getString("placeholder"), context),
+                    safeValue(block.getString("label")) + "：" + resolvePlaceholderText(block.getString("placeholder"), context),
                     false);
-            case "placeholder" -> addParagraphLines(document, resolvePlaceholder(block.getString("placeholder"), context), false);
+            case "placeholder" -> addParagraphLines(document, resolvePlaceholderText(block.getString("placeholder"), context), false);
             case "blank" -> document.createParagraph();
             default -> {
             }
@@ -151,7 +165,37 @@ public class ProRagTemplateOutputService {
         }
     }
 
-    private String resolveInlinePlaceholders(String templateText, DocumentTemplateContext context) {
+    /**
+     * 通过 FreeMarker 渲染类路径模板，优先加载主模板，不存在则回退到默认模板。
+     */
+    private String processTemplate(String primaryPath, String fallbackPath, Map<String, Object> model) throws Exception {
+        Template template;
+        try {
+            template = freemarkerConfig.getTemplate(primaryPath);
+        } catch (Exception e) {
+            template = freemarkerConfig.getTemplate(fallbackPath);
+        }
+        StringWriter writer = new StringWriter();
+        template.process(model, writer);
+        return writer.toString();
+    }
+
+    /**
+     * 加载原始模板文件内容（不会经过 FreeMarker 渲染），用于 JSON 布局文件。
+     */
+    private String loadTemplateContent(String primaryPath, String fallbackPath) throws Exception {
+        String classPath = "classpath:templates/pro-rag/" + primaryPath;
+        Resource resource = resourceLoader.getResource(classPath);
+        if (!resource.exists()) {
+            classPath = "classpath:templates/pro-rag/" + fallbackPath;
+            resource = resourceLoader.getResource(classPath);
+        }
+        try (var inputStream = resource.getInputStream()) {
+            return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private String renderInline(String templateText, DocumentTemplateContext context) {
         if (!StringUtils.hasText(templateText)) {
             return "";
         }
@@ -161,7 +205,7 @@ public class ProRagTemplateOutputService {
                 .replace("${directiveFilename}", safeValue(context.directiveFilename()));
     }
 
-    private String resolvePlaceholder(String placeholder, DocumentTemplateContext context) {
+    private String resolvePlaceholderText(String placeholder, DocumentTemplateContext context) {
         if (!StringUtils.hasText(placeholder)) {
             return "";
         }
@@ -174,16 +218,6 @@ public class ProRagTemplateOutputService {
             case "body" -> safeValue(context.body());
             default -> "";
         };
-    }
-
-    private String readTemplate(String primaryLocation, String fallbackLocation) throws Exception {
-        Resource resource = resourceLoader.getResource(primaryLocation);
-        if (!resource.exists()) {
-            resource = resourceLoader.getResource(fallbackLocation);
-        }
-        try (InputStream inputStream = resource.getInputStream()) {
-            return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
-        }
     }
 
     private String resolveOutputFilename(String outputFilename, String documentTitle, DocumentOutputFormat outputFormat) {

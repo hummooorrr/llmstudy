@@ -14,6 +14,7 @@ import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.util.MimeType;
 import org.springframework.util.StringUtils;
@@ -37,8 +38,9 @@ import java.util.Map;
  * 原有纯文本分块路径，不做结构化拆分。
  */
 @Component
+@Order(20)
 @Slf4j
-public class DocxIngestionPipeline {
+public class DocxIngestionPipeline implements DocumentIngestionPipeline {
 
     @Autowired
     private SplitterFactory splitterFactory;
@@ -55,6 +57,16 @@ public class DocxIngestionPipeline {
     private static final MimeType PNG = MimeType.valueOf("image/png");
     private static final MimeType JPEG = MimeType.valueOf("image/jpeg");
 
+    @Override
+    public boolean supports(File file) {
+        if (file == null || !file.isFile()) {
+            return false;
+        }
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".docx") || name.endsWith(".doc");
+    }
+
+    @Override
     public List<Document> process(File docFile, String profile) throws Exception {
         String lowerName = docFile.getName().toLowerCase();
         if (lowerName.endsWith(".doc")) {

@@ -122,6 +122,7 @@ pro-rag:
     vector-top-k: 10
     keyword-top-k: 5
     similarity-threshold: 0.35
+    parent-context-enabled: ${PRO_RAG_PARENT_CONTEXT_ENABLED:true}
     max-rewrite-queries: 3
     directive-vector-top-k: 8
     directive-similarity-threshold: 0.20
@@ -133,8 +134,17 @@ pro-rag:
     rerank:
       rrf-k: 60
       final-top-k: 6
+      # Rerank 候选池大小：RRF 粗排先留这么多，再让 Rerank 从中挑 final-top-k
+      candidate-pool-size: ${PRO_RAG_RERANK_POOL_SIZE:24}
+  # 检索结果本地缓存（Caffeine）
+  cache:
+    retrieval-ttl-seconds: ${PRO_RAG_CACHE_TTL_SECONDS:300}
+    retrieval-max-size: ${PRO_RAG_CACHE_MAX_SIZE:500}
+    locate-ttl-seconds: ${PRO_RAG_LOCATE_CACHE_TTL_SECONDS:600}
+    locate-max-size: ${PRO_RAG_LOCATE_CACHE_MAX_SIZE:200}
   # 文档解析开关（表格/图片结构化、VL 限流）
   parsing:
     structured-enabled: ${PRO_RAG_STRUCTURED_PARSE_ENABLED:true}
     max-images-per-doc: ${PRO_RAG_MAX_IMAGES_PER_DOC:20}
     min-image-dimension: 80
+    vision-max-concurrency: ${PRO_RAG_VISION_MAX_CONCURRENCY:3}

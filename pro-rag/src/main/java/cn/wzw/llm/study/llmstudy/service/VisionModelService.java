@@ -1,5 +1,6 @@
 package cn.wzw.llm.study.llmstudy.service;
 
+import cn.wzw.llm.study.llmstudy.config.ParsingProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -16,7 +17,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
-import org.springframework.util.MimeTypeUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -24,9 +24,12 @@ import io.micrometer.observation.ObservationRegistry;
 import jakarta.annotation.PostConstruct;
 
 import java.util.List;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 视觉模型服务：使用智谱 GLM-4V-Flash 识别图片内容
+ * 视觉模型服务：使用智谱 GLM-4V-Flash 识别图片内容。
+ * 通过 Semaphore 控制 VL API 并发调用数，防止批量处理时打爆 API 限流。
  */
 @Service
 @Slf4j
@@ -38,7 +41,14 @@ public class VisionModelService {
     @Value("${pro-rag.models.vision}")
     private String visionModel;
 
+    private final ParsingProperties parsingProperties;
+
     private ChatModel visionChatModel;
+    private Semaphore semaphore;
+
+    public VisionModelService(ParsingProperties parsingProperties) {
+        this.parsingProperties = parsingProperties;
+    }
 
     @PostConstruct
     public void init() {
@@ -57,10 +67,15 @@ public class VisionModelService {
                 new RetryTemplate(),
                 ObservationRegistry.NOOP,
                 new DefaultToolExecutionEligibilityPredicate());
+
+        int maxConcurrency = Math.max(1, parsingProperties.getVisionMaxConcurrency());
+        this.semaphore = new Semaphore(maxConcurrency);
+        log.info("VL 模型并发上限: {}", maxConcurrency);
     }
 
     /**
-     * 识别图片内容，返回文字描述
+     * 识别图片内容，返回文字描述。
+     * 受 Semaphore 限流控制，超时 120 秒。
      *
      * @param imageBytes 图片字节数据
      * @param mimeType   图片 MIME 类型
@@ -68,6 +83,24 @@ public class VisionModelService {
      * @return 图片的文字描述
      */
     public String describeImage(byte[] imageBytes, MimeType mimeType, String prompt) {
+        boolean acquired = false;
+        try {
+            acquired = semaphore.tryAcquire(120, TimeUnit.SECONDS);
+            if (!acquired) {
+                throw new RuntimeException("VL 模型并发已满，等待 120s 仍无法获取许可");
+            }
+            return doDescribeImage(imageBytes, mimeType, prompt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("VL 调用被中断", e);
+        } finally {
+            if (acquired) {
+                semaphore.release();
+            }
+        }
+    }
+
+    private String doDescribeImage(byte[] imageBytes, MimeType mimeType, String prompt) {
         String userPrompt = (prompt != null) ? prompt : "请仔细识别并提取这张图片中的所有文字内容，保持原始格式和结构。如果图片中有表格，请用文本形式还原。";
 
         Media media = Media.builder()
@@ -83,7 +116,7 @@ public class VisionModelService {
         Prompt visionPrompt = new Prompt(List.of(userMessage));
         ChatResponse response = visionChatModel.call(visionPrompt);
         String result = response.getResult().getOutput().getText();
-        log.info("视觉模型识别完成，结果长度: {} 字符", result != null ? result.length() : 0);
+        log.debug("视觉模型识别完成，结果长度: {} 字符", result != null ? result.length() : 0);
         return result;
     }
 }

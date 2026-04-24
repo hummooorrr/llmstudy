@@ -3,7 +3,6 @@ package cn.wzw.llm.study.llmstudy.service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -102,17 +101,4 @@ public class EmbeddingService {
         log.info("向量库删除 {} 条数据", ids.size());
     }
 
-    /**
-     * 相似度查询
-     * @param query 用户的原始问题
-     * @return 文档块
-     */
-    public List<Document> similarSearch(String query) {
-        return vectorStore.similaritySearch(SearchRequest
-                .builder()
-                .query(query)
-                .topK(5)
-                .similarityThreshold(0.7f)
-                .build());
-    }
 }

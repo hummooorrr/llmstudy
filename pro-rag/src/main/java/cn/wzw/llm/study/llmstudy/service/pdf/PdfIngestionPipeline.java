@@ -30,13 +30,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import cn.wzw.llm.study.llmstudy.service.DocumentIngestionPipeline;
+import org.springframework.core.annotation.Order;
+
 /**
  * PDF 入库流水线：文本抽取 + 表格候选页 VL 识别 + 内嵌图片 VL 描述。
  * 扫描件（首尝试无文本可抽取）会退化为整页 VL（支持 TABLE 标记）的处理路径。
  */
 @Component
+@Order(10)
 @Slf4j
-public class PdfIngestionPipeline {
+public class PdfIngestionPipeline implements DocumentIngestionPipeline {
 
     @Autowired
     private SplitterFactory splitterFactory;
@@ -53,9 +57,18 @@ public class PdfIngestionPipeline {
     private static final MimeType PNG = MimeType.valueOf("image/png");
     private static final int SCAN_DPI = 150;
 
+    @Override
+    public boolean supports(File file) {
+        if (file == null || !file.isFile()) {
+            return false;
+        }
+        return file.getName().toLowerCase().endsWith(".pdf");
+    }
+
     /**
      * 对一份 PDF 生成所有类型的 chunk（text / table / image）。
      */
+    @Override
     public List<Document> process(File pdfFile, String textProfile) throws Exception {
         try (PDDocument document = Loader.loadPDF(pdfFile)) {
             int pageCount = document.getNumberOfPages();

@@ -29,23 +29,23 @@ public class StorageCleanupService {
 
     private static final DateTimeFormatter DISPLAY_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    @Value("${pro-rag.upload-dir:./pro-rag-files}")
-    private String uploadDir;
-
-    @Value("${pro-rag.generated-dir:./pro-rag-generated}")
-    private String generatedDir;
-
+    private final String uploadDir;
+    private final String generatedDir;
     private final StorageCleanupProperties storageCleanupProperties;
     private final EmbeddingService embeddingService;
     private final ProRagElasticSearchService proRagElasticSearchService;
     private final AssetStorageService assetStorageService;
 
     public StorageCleanupService(
+            @Value("${pro-rag.upload-dir:./pro-rag-files}") String uploadDir,
+            @Value("${pro-rag.generated-dir:./pro-rag-generated}") String generatedDir,
             StorageCleanupProperties storageCleanupProperties,
             EmbeddingService embeddingService,
             ProRagElasticSearchService proRagElasticSearchService,
             AssetStorageService assetStorageService
     ) {
+        this.uploadDir = uploadDir;
+        this.generatedDir = generatedDir;
         this.storageCleanupProperties = storageCleanupProperties;
         this.embeddingService = embeddingService;
         this.proRagElasticSearchService = proRagElasticSearchService;
