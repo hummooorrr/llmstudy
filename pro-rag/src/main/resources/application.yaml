@@ -1,6 +1,10 @@
 spring:
   application:
     name: pro-rag
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.zhipuai.autoconfigure.ZhiPuAiChatAutoConfiguration
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
   # 主 datasource 给 pgvector 用
