@@ -26,7 +26,7 @@ public class ProRagConfiguration {
     private ChatClient chatChatClient;
 
     public ProRagConfiguration(
-            ChatModel chatModel,
+            @Qualifier("openAiChatModel") ChatModel chatModel,
             @Qualifier("chatMemoryJdbcTemplate") JdbcTemplate chatMemoryJdbcTemplate,
             @Value("${pro-rag.chat-memory.chat-window:30}") int chatWindow,
             @Value("${pro-rag.chat-memory.generate-window:30}") int generateWindow) {
