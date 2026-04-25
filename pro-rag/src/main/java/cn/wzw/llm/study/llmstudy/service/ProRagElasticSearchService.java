@@ -35,12 +35,24 @@ public class ProRagElasticSearchService {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
+    private boolean clientAvailable() {
+        if (client == null) {
+            log.warn("Elasticsearch client 不可用，跳过 ES 操作");
+            return false;
+        }
+        return true;
+    }
+
     private static final String INDEX_NAME = "pro_rag_docs";
 
     private static final String FIELD_CONTENT = "content";
 
     @PostConstruct
     public void init() {
+        if (!clientAvailable()) {
+            log.warn("ES client 不可用，跳过索引初始化");
+            return;
+        }
         try {
             if (!indexExists(INDEX_NAME)) {
                 createIndex();
@@ -58,6 +70,9 @@ public class ProRagElasticSearchService {
      * 创建索引（IK 分词 + 停用词 + lowercase + filePath/filename 映射 + 结构化 metadata 字段）
      */
     public void createIndex() throws Exception {
+        if (!clientAvailable()) {
+            throw new IllegalStateException("Elasticsearch client 不可用，无法创建索引");
+        }
         String settingsAndMappingJson =
                 "{"
                         + "\"settings\": {"
@@ -162,6 +177,9 @@ public class ProRagElasticSearchService {
         if (docs == null || docs.isEmpty()) {
             return;
         }
+        if (!clientAvailable()) {
+            throw new IllegalStateException("Elasticsearch client 不可用，无法写入索引");
+        }
 
         BulkRequest.Builder bulkBuilder = new BulkRequest.Builder();
 
@@ -191,6 +209,9 @@ public class ProRagElasticSearchService {
     }
 
     public boolean indexExists(String indexName) throws IOException {
+        if (!clientAvailable()) {
+            return false;
+        }
         ExistsRequest request = ExistsRequest.of(b -> b.index(indexName));
         return client.indices().exists(request).value();
     }
@@ -199,6 +220,9 @@ public class ProRagElasticSearchService {
      * 按 filename 查询 ES 中已有的旧数据 _id 列表
      */
     public List<String> findIdsByFilename(String filename) throws Exception {
+        if (!clientAvailable()) {
+            return List.of();
+        }
         SearchRequest request = SearchRequest.of(b -> b
                 .index(INDEX_NAME)
                 .query(q -> q.term(t -> t.field("metadata.filename").value(filename)))
@@ -218,6 +242,10 @@ public class ProRagElasticSearchService {
         if (ids == null || ids.isEmpty()) {
             return;
         }
+        if (!clientAvailable()) {
+            log.warn("ES client 不可用，跳过删除 {} 条数据", ids.size());
+            return;
+        }
         DeleteByQueryRequest request = DeleteByQueryRequest.of(b -> b
                 .index(INDEX_NAME)
                 .query(q -> q.ids(i -> i.values(ids)))
@@ -230,6 +258,9 @@ public class ProRagElasticSearchService {
      * 中文检索 - ik_max_word 建库 + ik_smart 检索
      */
     public List<EsDocumentChunk> searchByKeyword(String keyword) throws Exception {
+        if (!clientAvailable()) {
+            return List.of();
+        }
         return searchByKeyword(keyword, 5, false);
     }
 
@@ -237,6 +268,9 @@ public class ProRagElasticSearchService {
      * 中文检索：ik_max_word / ik_smart 切换
      */
     public List<EsDocumentChunk> searchByKeyword(String keyword, int size, boolean useSmartAnalyzer) throws Exception {
+        if (!clientAvailable()) {
+            return List.of();
+        }
         String field = useSmartAnalyzer ? FIELD_CONTENT + ".smart" : FIELD_CONTENT;
 
         SearchRequest request = SearchRequest.of(b -> b
@@ -270,6 +304,9 @@ public class ProRagElasticSearchService {
      * 按 _id 精确查询单个 chunk，用于前端点击引用角标查看原文上下文。
      */
     public Optional<EsDocumentChunk> findById(String id) throws Exception {
+        if (!clientAvailable()) {
+            return Optional.empty();
+        }
         if (id == null || id.isBlank()) {
             return Optional.empty();
         }
@@ -288,6 +325,9 @@ public class ProRagElasticSearchService {
      * 按文件名/页码回查候选 chunk，用于引用 ID 不一致时的兜底定位。
      */
     public List<EsDocumentChunk> findCandidates(String filename, Integer pageNumber, int limit) throws Exception {
+        if (!clientAvailable()) {
+            return List.of();
+        }
         if (filename == null || filename.isBlank()) {
             return List.of();
         }
@@ -517,6 +557,9 @@ public class ProRagElasticSearchService {
      * 删除整个索引并按最新 mapping 重建。调用方需要额外重新入库已有文件。
      */
     public void recreateIndex() throws Exception {
+        if (!clientAvailable()) {
+            throw new IllegalStateException("Elasticsearch client 不可用，无法重建索引");
+        }
         if (indexExists(INDEX_NAME)) {
             client.indices().delete(d -> d.index(INDEX_NAME));
             log.warn("ES index [{}] deleted for recreation.", INDEX_NAME);

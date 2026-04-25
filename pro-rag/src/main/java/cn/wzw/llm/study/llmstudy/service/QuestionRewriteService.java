@@ -7,10 +7,12 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /** 问题重写服务：支持智能查询路由、问题分解、富化、多样化和回退策略 */
 @Service
@@ -20,6 +22,11 @@ public class QuestionRewriteService {
     public enum QueryStrategy { DIRECT, DECOMPOSE, HYDE }
 
     public record QueryRouteResult(QueryStrategy strategy, List<String> subQueries, String hypotheticalAnswer) {}
+
+    private static final int MAX_RETRIES = 3;
+
+    @Value("${pro-rag.rewrite.retry-interval-base:1000}")
+    private long retryIntervalBase;
 
     @Autowired
     @Qualifier("openAiChatModel")
@@ -120,6 +127,74 @@ public class QuestionRewriteService {
                     + "请只输出JSON，不要包含解释。";
 
     /**
+     * 带重试的 LLM 调用，最多尝试 {@value #MAX_RETRIES} 次，指数退避。
+     */
+    private String callWithRetry(Supplier<String> call, String operation) {
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                String result = call.get();
+                if (result != null && !result.isBlank()) {
+                    return result;
+                }
+                log.warn("{} 返回空结果（尝试 {}/{}）", operation, attempt, MAX_RETRIES);
+            } catch (Exception e) {
+                log.warn("{} 失败（尝试 {}/{}）: {}", operation, attempt, MAX_RETRIES, e.getMessage());
+                if (attempt == MAX_RETRIES) {
+                    throw new RuntimeException(operation + " 失败，已重试 " + MAX_RETRIES + " 次", e);
+                }
+            }
+            if (attempt < MAX_RETRIES) {
+                try {
+                    Thread.sleep(retryIntervalBase * attempt);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        throw new RuntimeException(operation + " 失败，已重试 " + MAX_RETRIES + " 次");
+    }
+
+    /**
+     * 从 LLM 返回文本中提取 JSON 对象，兼容 markdown 围栏、多余文字、尾逗号等常见格式问题。
+     */
+    private JSONObject extractJsonObject(String raw) {
+        String cleaned = stripMarkdownFences(raw);
+        // 定位第一个 { 和最后一个 }
+        int start = cleaned.indexOf('{');
+        int end = cleaned.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            throw new IllegalArgumentException("无法从 LLM 输出中定位 JSON 对象: " + raw);
+        }
+        String jsonStr = cleaned.substring(start, end + 1);
+        return JSON.parseObject(jsonStr);
+    }
+
+    /**
+     * 从 LLM 返回文本中提取 JSON 数组。
+     */
+    private List<String> extractJsonArray(String raw) {
+        String cleaned = stripMarkdownFences(raw);
+        int start = cleaned.indexOf('[');
+        int end = cleaned.lastIndexOf(']');
+        if (start < 0 || end <= start) {
+            throw new IllegalArgumentException("无法从 LLM 输出中定位 JSON 数组: " + raw);
+        }
+        String jsonStr = cleaned.substring(start, end + 1);
+        return JSON.parseArray(jsonStr, String.class);
+    }
+
+    private String stripMarkdownFences(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String cleaned = raw.trim();
+        if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replaceAll("^```\\w*\\s*", "").replaceAll("\\s*```$", "");
+        }
+        return cleaned.trim();
+    }
+
+    /**
      * 智能查询路由：单次 LLM 调用完成分类 + 生成
      */
     public QueryRouteResult routeQuery(String query) {
@@ -129,36 +204,39 @@ public class QuestionRewriteService {
         PromptTemplate promptTemplate = new PromptTemplate(ROUTE_PROMPT);
         promptTemplate.add(QUESTION, query);
 
-        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
-        log.info("===========路由原始结果: {} ===========", result);
+        String rawResult = callWithRetry(
+                () -> chatModel.call(promptTemplate.create()).getResult().getOutput().getText(),
+                "查询路由");
 
-        String cleaned = result.trim();
-        if (cleaned.startsWith("```")) {
-            cleaned = cleaned.replaceAll("^```\\w*\\n?", "").replaceAll("\\n?```$", "");
-        }
+        log.info("===========路由原始结果: {} ===========", rawResult);
 
-        JSONObject json = JSON.parseObject(cleaned.trim());
-        String strategyStr = json.getString("strategy");
-
-        QueryStrategy strategy;
         try {
-            strategy = QueryStrategy.valueOf(strategyStr);
+            JSONObject json = extractJsonObject(rawResult);
+            String strategyStr = json.getString("strategy");
+
+            QueryStrategy strategy;
+            try {
+                strategy = QueryStrategy.valueOf(strategyStr);
+            } catch (Exception e) {
+                log.warn("无法识别策略: {}，回退为 DIRECT", strategyStr);
+                return new QueryRouteResult(QueryStrategy.DIRECT, List.of(query), null);
+            }
+
+            return switch (strategy) {
+                case DIRECT -> new QueryRouteResult(strategy, List.of(query), null);
+                case DECOMPOSE -> {
+                    List<String> subQueries = json.getList("payload", String.class);
+                    yield new QueryRouteResult(strategy, subQueries, null);
+                }
+                case HYDE -> {
+                    String hydeAnswer = json.getString("payload");
+                    yield new QueryRouteResult(strategy, null, hydeAnswer);
+                }
+            };
         } catch (Exception e) {
-            log.warn("无法识别策略: {}，回退为 DIRECT", strategyStr);
+            log.warn("路由 JSON 解析失败，回退为 DIRECT: {}", e.getMessage());
             return new QueryRouteResult(QueryStrategy.DIRECT, List.of(query), null);
         }
-
-        return switch (strategy) {
-            case DIRECT -> new QueryRouteResult(strategy, List.of(query), null);
-            case DECOMPOSE -> {
-                List<String> subQueries = json.getList("payload", String.class);
-                yield new QueryRouteResult(strategy, subQueries, null);
-            }
-            case HYDE -> {
-                String hydeAnswer = json.getString("payload");
-                yield new QueryRouteResult(strategy, null, hydeAnswer);
-            }
-        };
     }
 
     /**
@@ -173,9 +251,20 @@ public class QuestionRewriteService {
         PromptTemplate promptTemplate = new PromptTemplate(DECOMPOSE_PROMPT);
         promptTemplate.add(QUESTION, question);
 
-        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
-        log.info("===========问题分解完成，结果: {} ===========", result);
-        return JSON.parseArray(result, String.class);
+        String rawResult = callWithRetry(
+                () -> chatModel.call(promptTemplate.create()).getResult().getOutput().getText(),
+                "问题分解");
+
+        log.info("===========问题分解完成，结果: {} ===========", rawResult);
+        try {
+            List<String> parsed = extractJsonArray(rawResult);
+            if (parsed != null && !parsed.isEmpty()) {
+                return parsed;
+            }
+        } catch (Exception e) {
+            log.warn("分解 JSON 解析失败，回退为原始问题: {}", e.getMessage());
+        }
+        return List.of(question);
     }
 
     /**
@@ -189,9 +278,9 @@ public class QuestionRewriteService {
         promptTemplate.add(CHAT_HISTORY, chatHistory);
         promptTemplate.add(QUESTION, question);
 
-        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
-        log.info("===========问题富化完成，结果: {} ===========", result);
-        return result;
+        return callWithRetry(
+                () -> chatModel.call(promptTemplate.create()).getResult().getOutput().getText(),
+                "问题富化");
     }
 
     /**
@@ -203,9 +292,20 @@ public class QuestionRewriteService {
         PromptTemplate promptTemplate = new PromptTemplate(DIVERSIFY_PROMPT);
         promptTemplate.add(QUESTION, question);
 
-        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
-        log.info("===========问题多样化完成，结果: {} ===========", result);
-        return JSON.parseArray(result, String.class);
+        String rawResult = callWithRetry(
+                () -> chatModel.call(promptTemplate.create()).getResult().getOutput().getText(),
+                "问题多样化");
+
+        log.info("===========问题多样化完成，结果: {} ===========", rawResult);
+        try {
+            List<String> parsed = extractJsonArray(rawResult);
+            if (parsed != null && !parsed.isEmpty()) {
+                return parsed;
+            }
+        } catch (Exception e) {
+            log.warn("多样化 JSON 解析失败，回退为原始问题: {}", e.getMessage());
+        }
+        return List.of(question);
     }
 
     /**
@@ -220,9 +320,9 @@ public class QuestionRewriteService {
         PromptTemplate promptTemplate = new PromptTemplate(STEP_BACK);
         promptTemplate.add(QUESTION, question);
 
-        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
-        log.info("===========问题回退完成，结果: {} ===========", result);
-        return result;
+        return callWithRetry(
+                () -> chatModel.call(promptTemplate.create()).getResult().getOutput().getText(),
+                "问题回退");
     }
 
     // 组合方法
