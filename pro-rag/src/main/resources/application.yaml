@@ -23,7 +23,7 @@ spring:
           dimensions: ${PRO_RAG_EMBEDDING_DIMENSIONS:2048}
     openai:
       api-key: ${DEEPSEEK_API_KEY:${ZHIPU_API_KEY:}}
-      base-url: https://api.deepseek.com
+      base-url: ${OPENAI_BASE_URL:https://api.deepseek.com}
       embedding:
         enabled: false
       chat:
@@ -36,7 +36,7 @@ spring:
         # 距离度量，余弦值
         distance-type: COSINE_DISTANCE
         # 向量维度
-        dimensions: 2048
+        dimensions: ${PRO_RAG_VECTOR_DIMENSIONS:2048}
         # 批量处理大小
         max-document-batch-size: 9
         # 启动时是否自动创建表
@@ -67,6 +67,7 @@ pro-rag:
     dry-run: ${PRO_RAG_CLEANUP_DRY_RUN:false}
   rerank:
     enabled: ${PRO_RAG_RERANK_ENABLED:true}
+    base-url: ${PRO_RAG_RERANK_BASE_URL:https://open.bigmodel.cn/api/paas/v4/rerank}
   # 对话/生成记忆（持久化到 MySQL）
   chat-memory:
     # 对话 scope 保留多少条历史消息（1 条 = 1 个 user / assistant 消息）

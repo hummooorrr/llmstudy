@@ -31,6 +31,9 @@ public class ZhipuRerankProvider implements RerankProvider {
     @Value("${pro-rag.models.rerank}")
     private String rerankModel;
 
+    @Value("${pro-rag.rerank.base-url:https://open.bigmodel.cn/api/paas/v4/rerank}")
+    private String rerankBaseUrl;
+
     private final RestTemplate restTemplate;
 
     public ZhipuRerankProvider() {
@@ -59,7 +62,7 @@ public class ZhipuRerankProvider implements RerankProvider {
             return Collections.emptyList();
         }
 
-        String url = "https://open.bigmodel.cn/api/paas/v4/rerank";
+        String url = rerankBaseUrl;
         HttpHeaders headers = new HttpHeaders();
         headers.set("Authorization", "Bearer " + apiKey);
         headers.setContentType(MediaType.APPLICATION_JSON);
