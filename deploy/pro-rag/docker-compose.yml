@@ -76,21 +76,33 @@ services:
     env_file:
       - .env
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
+      TZ: ${TZ}
       SERVER_PORT: 28692
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      PRO_RAG_CHAT_MODEL: ${PRO_RAG_CHAT_MODEL}
+      PRO_RAG_EMBEDDING_MODEL: ${PRO_RAG_EMBEDDING_MODEL}
+      PRO_RAG_EMBEDDING_DIMENSIONS: ${PRO_RAG_EMBEDDING_DIMENSIONS}
+      PRO_RAG_VECTOR_DIMENSIONS: ${PRO_RAG_VECTOR_DIMENSIONS}
+      PRO_RAG_VISION_MODEL: ${PRO_RAG_VISION_MODEL}
+      PRO_RAG_RERANK_MODEL: ${PRO_RAG_RERANK_MODEL}
+      PRO_RAG_RERANK_ENABLED: ${PRO_RAG_RERANK_ENABLED}
+      PRO_RAG_RERANK_BASE_URL: ${PRO_RAG_RERANK_BASE_URL}
       PG_URL: jdbc:postgresql://postgres:5432/rag_test
+      PG_USERNAME: ${PG_USERNAME}
+      PG_PASSWORD: ${PG_PASSWORD}
       ELASTICSEARCH_URIS: http://elasticsearch:9200
-      # 对话记忆 MySQL 连接（使用容器内服务名 mysql）
-      MYSQL_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-pro_rag}?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
-      MYSQL_USERNAME: ${MYSQL_USERNAME:-pro_rag}
+      MYSQL_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE}?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+      MYSQL_USERNAME: ${MYSQL_USERNAME}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      PRO_RAG_CHAT_MEMORY_WINDOW: ${PRO_RAG_CHAT_MEMORY_WINDOW:-30}
-      PRO_RAG_GENERATE_MEMORY_WINDOW: ${PRO_RAG_GENERATE_MEMORY_WINDOW:-30}
+      PRO_RAG_CHAT_MEMORY_WINDOW: ${PRO_RAG_CHAT_MEMORY_WINDOW}
+      PRO_RAG_GENERATE_MEMORY_WINDOW: ${PRO_RAG_GENERATE_MEMORY_WINDOW}
       PRO_RAG_UPLOAD_DIR: /data/uploads
       PRO_RAG_GENERATED_DIR: /data/generated
-      PRO_RAG_STRUCTURED_PARSE_ENABLED: ${PRO_RAG_STRUCTURED_PARSE_ENABLED:-true}
-      PRO_RAG_MAX_IMAGES_PER_DOC: ${PRO_RAG_MAX_IMAGES_PER_DOC:-20}
-      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx1536m}
+      PRO_RAG_STRUCTURED_PARSE_ENABLED: ${PRO_RAG_STRUCTURED_PARSE_ENABLED}
+      PRO_RAG_MAX_IMAGES_PER_DOC: ${PRO_RAG_MAX_IMAGES_PER_DOC}
+      JAVA_OPTS: ${JAVA_OPTS}
     depends_on:
       postgres:
         condition: service_healthy
