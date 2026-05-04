@@ -14,7 +14,7 @@ WORKDIR /app
 COPY --from=builder /build/pro-rag/target/*.jar /app/app.jar
 
 ENV TZ=Asia/Shanghai
-ENV JAVA_OPTS="-Xms512m -Xmx1536m"
+ENV JAVA_OPTS="-Xms256m -Xmx1024m"
 
 EXPOSE 28692
 
