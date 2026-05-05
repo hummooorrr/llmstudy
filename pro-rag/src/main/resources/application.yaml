@@ -1,6 +1,19 @@
 spring:
   application:
     name: pro-rag
+  reactor:
+    netty:
+      pool:
+        # 连接池生命周期（MiMo 容易断开，需要复用连接）
+        max-idle-time: 60s
+        max-life-time: 120s
+        # 空闲检测保活
+        idle-timeout: 30s
+      http:
+        # 响应超时 50 分钟（MiMo 长回复可能超时）
+        response-timeout: 3000s
+        # 读空闲检测
+        read-idle-timeout: 300s
   autoconfigure:
     exclude:
       - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
