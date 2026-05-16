@@ -75,12 +75,16 @@ public class ProRagDocumentIngestionService {
 
         String originalFilename = StringUtils.cleanPath(resolveOriginalFilename(file));
         Path storedPath = resolveUniquePath(uploadPath, originalFilename);
+        log.info("[入库] 落盘: {} → {}", originalFilename, storedPath);
         file.transferTo(storedPath.toFile());
 
         List<Document> chunks = normalizeChunkIds(splitDocuments(storedPath.toFile(), profileOverride));
         if (CollectionUtils.isEmpty(chunks)) {
             throw new IllegalArgumentException("文件解析后没有可入库内容: " + originalFilename);
         }
+        log.info("[入库] 分片完成: 文件={}, 总chunk数={}, 空/空白文本chunk数={}",
+                originalFilename, chunks.size(),
+                chunks.stream().filter(doc -> doc.getText() == null || doc.getText().isBlank()).count());
 
         writeToStores(chunks, originalFilename, storedPath);
 
@@ -97,17 +101,32 @@ public class ProRagDocumentIngestionService {
      * 双写向量库和 ES，任意失败都不留下孤儿数据。
      */
     private void writeToStores(List<Document> chunks, String originalFilename, Path storedPath) throws Exception {
-        List<EsDocumentChunk> esDocs = toEsDocs(chunks);
+        // 过滤空文本 chunk，避免 embedding API 返回 1210
+        List<Document> validChunks = chunks.stream()
+                .filter(doc -> doc.getText() != null && !doc.getText().isBlank())
+                .toList();
+        if (validChunks.isEmpty()) {
+            throw new IllegalArgumentException("所有 chunk 文本为空，无法入库: " + originalFilename);
+        }
+        if (validChunks.size() < chunks.size()) {
+            log.warn("文件 {} 过滤掉 {}/{} 个空文本 chunk",
+                    originalFilename, chunks.size() - validChunks.size(), chunks.size());
+        }
+        List<EsDocumentChunk> esDocs = toEsDocs(validChunks);
 
         // Step 1: 写向量库
-        embeddingService.embedAndStore(chunks);
+        log.info("[入库] 写向量库: 文件={}, 有效chunk数={}", originalFilename, validChunks.size());
+        long embedStart = System.currentTimeMillis();
+        embeddingService.embedAndStore(validChunks);
+        log.info("[入库] 向量库写入完成: 文件={}, 耗时={}ms", originalFilename, System.currentTimeMillis() - embedStart);
 
         // Step 2: 写 ES，失败时回滚向量库
+        log.info("[入库] 写ES索引: 文件={}, esDoc数={}", originalFilename, esDocs.size());
         try {
             proRagElasticSearchService.bulkIndex(esDocs);
         } catch (Exception e) {
             log.error("ES 索引失败，回滚向量库数据: 文件={}, chunk数={}", originalFilename, esDocs.size());
-            List<String> vectorIds = chunks.stream().map(Document::getId).toList();
+            List<String> vectorIds = validChunks.stream().map(Document::getId).toList();
             try {
                 embeddingService.deleteByIds(vectorIds);
                 log.info("已回滚向量库 {} 条数据", vectorIds.size());

@@ -68,15 +68,19 @@ public class ProRagRetrievalService {
     private int parentContextMaxChars;
 
     public List<LocateResultItem> locateFiles(String query) throws Exception {
+        log.info("[Locate] 定位开始: queryLength={}", query.length());
         String cacheKey = retrievalCacheService != null ? RetrievalCacheService.buildLocateKey(query) : null;
         if (cacheKey != null) {
             List<LocateResultItem> cached = retrievalCacheService.getLocate(cacheKey);
             if (cached != null) {
+                log.info("[Locate] 缓存命中: key={}, resultCount={}", cacheKey, cached.size());
                 return cached;
             }
         }
 
         QueryBundle bundle = buildQueries(query);
+        log.debug("[Locate] 查询构建完成: vectorQueries={}, keywordQueries={}",
+                bundle.vectorQueries().size(), bundle.keywordQueries().size());
         RetrievalProperties.Locate locateCfg = retrievalProperties.getLocate();
         List<SearchHit> vectorHits = searchVectorHits(bundle.vectorQueries(), null,
                 locateCfg.getVectorTopK(), locateCfg.getSimilarityThreshold());
@@ -95,6 +99,9 @@ public class ProRagRetrievalService {
                 .map(FileLocateAccumulator::toResult)
                 .toList();
 
+        log.info("[Locate] 定位完成: fileCount={}, vectorHits={}, keywordHits={}",
+                result.size(), vectorHits.size(), keywordHits.size());
+
         if (cacheKey != null) {
             retrievalCacheService.putLocate(cacheKey, result);
         }
@@ -103,6 +110,8 @@ public class ProRagRetrievalService {
     }
 
     public GenerationReferenceBundle retrieveReferenceBundle(String query, String directiveFilename) throws Exception {
+        log.info("[Retrieval] 检索开始: queryLength={}, directiveFilename={}",
+                query.length(), directiveFilename);
         int finalTopK = retrievalProperties.getRerank().getFinalTopK();
 
         String cacheKey = retrievalCacheService != null
@@ -115,6 +124,7 @@ public class ProRagRetrievalService {
         if (cacheKey != null) {
             GenerationReferenceBundle cached = retrievalCacheService.getRetrieval(cacheKey);
             if (cached != null) {
+                log.info("[Retrieval] 缓存命中: key={}, references={}", cacheKey, cached.referenceMaterials().size());
                 return cached;
             }
         }
@@ -130,11 +140,15 @@ public class ProRagRetrievalService {
 
     private GenerationReferenceBundle doRetrieveReferenceBundle(String query, String directiveFilename, int finalTopK) throws Exception {
         QueryBundle bundle = buildQueries(query);
+        log.debug("[Retrieval] 查询构建完成: vectorQueries={}, keywordQueries={}",
+                bundle.vectorQueries().size(), bundle.keywordQueries().size());
         List<Document> vectorDocs = searchVector(bundle.vectorQueries(), null,
                 retrievalProperties.getVectorTopK(), retrievalProperties.getSimilarityThreshold());
         List<EsDocumentChunk> keywordDocs = searchKeyword(bundle.keywordQueries(), retrievalProperties.getKeywordTopK());
+        log.info("[Retrieval] 初始检索完成: vectorDocs={}, keywordDocs={}", vectorDocs.size(), keywordDocs.size());
 
         if (StringUtils.hasText(directiveFilename)) {
+            log.debug("[Retrieval] 追加通知文件检索: directiveFilename={}", directiveFilename);
             List<Document> directiveDocs = searchVector(
                     List.of(query),
                     directiveFilename.trim(),
@@ -148,6 +162,7 @@ public class ProRagRetrievalService {
         // 保证 contents 与 referenceMaterials 的条目数、排序严格一致，LLM 输出的 [^cN] 永远能命中前端卡片。
         List<ProRagRerankUtil.FusedChunk> fused = proRagRerankUtil.hybridFusionDetailed(
                 vectorDocs, keywordDocs, bundle.originalQuery(), finalTopK);
+        log.info("[Retrieval] 融合重排完成: fusedChunks={}, finalTopK={}", fused.size(), finalTopK);
 
         List<String> contents = new ArrayList<>(fused.size());
         List<ReferenceMaterial> referenceMaterials = new ArrayList<>(fused.size());
@@ -162,6 +177,8 @@ public class ProRagRetrievalService {
             referenceMaterials.add(buildReferenceMaterial(chunk, refIdx, bundle.originalQuery()));
             refIdx++;
         }
+        log.info("[Retrieval] 检索完成: contents={}, references={}, parentContext={}",
+                contents.size(), referenceMaterials.size(), parentContextEnabled);
         return new GenerationReferenceBundle(contents, referenceMaterials);
     }
 
@@ -233,11 +250,15 @@ public class ProRagRetrievalService {
         String normalizedQuery = query.trim();
 
         if (questionRewriteService == null) {
+            log.debug("[buildQueries] 无改写服务，使用原始查询: queryLength={}", normalizedQuery.length());
             return new QueryBundle(normalizedQuery, List.of(normalizedQuery), List.of(normalizedQuery));
         }
 
         try {
             QuestionRewriteService.QueryRouteResult routeResult = questionRewriteService.routeQuery(normalizedQuery);
+            log.info("[buildQueries] 查询路由完成: strategy={}, subQueriesCount={}",
+                    routeResult.strategy(),
+                    routeResult.subQueries() != null ? routeResult.subQueries().size() : 0);
 
             return switch (routeResult.strategy()) {
                 case DIRECT -> new QueryBundle(normalizedQuery, List.of(normalizedQuery), List.of(normalizedQuery));

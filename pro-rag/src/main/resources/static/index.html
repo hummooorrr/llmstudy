@@ -1551,8 +1551,8 @@
             <div class="field">
                 <label for="generateOutputFormat">输出格式</label>
                 <select id="generateOutputFormat">
-                    <option value="markdown">Markdown</option>
                     <option value="docx">Word (.docx)</option>
+                    <option value="markdown">Markdown</option>
                 </select>
             </div>
             <div class="field">
@@ -1589,8 +1589,8 @@
             <div class="field">
                 <label for="uploadGenerateOutputFormat">输出格式</label>
                 <select id="uploadGenerateOutputFormat">
-                    <option value="markdown">Markdown</option>
                     <option value="docx">Word (.docx)</option>
+                    <option value="markdown">Markdown</option>
                 </select>
             </div>
             <div class="field">
@@ -1614,8 +1614,8 @@
         <div class="continue-edit-row">
             <input type="text" id="continueEditInstruction" placeholder="例如：把第三部分精简成 5 条要点；或者：给每个章节末尾补一个引用来源" />
             <select id="continueEditFormat">
-                <option value="markdown">Markdown (.md)</option>
                 <option value="docx">Word (.docx)</option>
+                <option value="markdown">Markdown (.md)</option>
             </select>
             <button class="btn btn-primary" id="continueEditBtn">
                 <svg class="ico"><use href="#i-pen"/></svg>继续修改
@@ -2710,7 +2710,7 @@ continueEditBtn.addEventListener('click', async () => {
         form.append('chatId', genChatId);
         form.append('instruction', instruction);
         form.append('domain', currentDomain);
-        form.append('outputFormat', continueEditFormat.value || 'markdown');
+        form.append('outputFormat', continueEditFormat.value || 'docx');
         const res = await fetch('/pro-rag/generate-file', { method: 'POST', body: form });
         if (!res.ok) {
             const errData = await res.text();

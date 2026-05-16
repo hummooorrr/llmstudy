@@ -4,6 +4,7 @@ import cn.wzw.llm.study.llmstudy.dto.cleanup.CleanupExecutionResult;
 import cn.wzw.llm.study.llmstudy.dto.cleanup.CleanupTarget;
 import cn.wzw.llm.study.llmstudy.dto.cleanup.PurgeUploadedFileResult;
 import cn.wzw.llm.study.llmstudy.service.StorageCleanupService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/pro-rag/cleanup")
+@Slf4j
 public class StorageCleanupController {
 
     private final StorageCleanupService storageCleanupService;
@@ -24,7 +26,10 @@ public class StorageCleanupController {
             @RequestParam(value = "target", defaultValue = "all") String target,
             @RequestParam(value = "dryRun", required = false) Boolean dryRun
     ) {
-        return storageCleanupService.cleanupExpiredLocalFiles(CleanupTarget.from(target), dryRun);
+        log.info("[Cleanup] 清理过期本地文件: target={}, dryRun={}", target, dryRun);
+        CleanupExecutionResult result = storageCleanupService.cleanupExpiredLocalFiles(CleanupTarget.from(target), dryRun);
+        log.info("[Cleanup] 清理完成: target={}", target);
+        return result;
     }
 
     @PostMapping("/purge-uploaded-file")
@@ -32,6 +37,9 @@ public class StorageCleanupController {
             @RequestParam("filename") String filename,
             @RequestParam(value = "dryRun", required = false) Boolean dryRun
     ) throws Exception {
-        return storageCleanupService.purgeUploadedFile(filename, dryRun);
+        log.warn("[Cleanup] 清理已上传文件: filename={}, dryRun={}", filename, dryRun);
+        PurgeUploadedFileResult result = storageCleanupService.purgeUploadedFile(filename, dryRun);
+        log.info("[Cleanup] 清理完成: filename={}", filename);
+        return result;
     }
 }

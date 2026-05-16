@@ -42,11 +42,14 @@ public class ProRagChunkController {
             @RequestParam(value = "sectionPath", required = false) String sectionPath,
             @RequestParam(value = "chunkType", required = false) String chunkType
     ) {
+        log.debug("[Chunk] 查询 chunk 详情: chunkId={}, filename={}, pageNumber={}", chunkId, requestFilename, requestPageNumber);
         Optional<EsDocumentChunk> chunkOpt = safeFindById(chunkId);
         if (chunkOpt.isEmpty()) {
+            log.debug("[Chunk] 按 _id 未命中，尝试按元数据提示回查: chunkId={}", chunkId);
             chunkOpt = safeResolveByHint(chunkId, requestFilename, requestPageNumber, excerpt, sectionPath, chunkType);
         }
         if (chunkOpt.isEmpty()) {
+            log.debug("[Chunk] chunk 未找到: chunkId={}", chunkId);
             return ResponseEntity.notFound().build();
         }
         EsDocumentChunk chunk = chunkOpt.get();

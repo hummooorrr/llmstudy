@@ -2,6 +2,7 @@ package cn.wzw.llm.study.llmstudy.controller;
 
 import cn.wzw.llm.study.llmstudy.dto.locate.LocateResultItem;
 import cn.wzw.llm.study.llmstudy.service.ProRagRetrievalService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,6 +17,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/pro-rag")
+@Slf4j
 public class ProRagLocateController {
 
     @Autowired
@@ -29,6 +31,9 @@ public class ProRagLocateController {
      */
     @GetMapping("/locate")
     public List<LocateResultItem> locate(@RequestParam("query") String query) throws Exception {
-        return proRagRetrievalService.locateFiles(query);
+        log.info("[Locate] 文件定位请求开始: queryLength={}", query.length());
+        List<LocateResultItem> result = proRagRetrievalService.locateFiles(query);
+        log.info("[Locate] 文件定位完成: resultCount={}", result.size());
+        return result;
     }
 }

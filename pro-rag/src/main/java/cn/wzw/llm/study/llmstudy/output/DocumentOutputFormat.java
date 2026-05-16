@@ -22,7 +22,7 @@ public enum DocumentOutputFormat {
 
     public static DocumentOutputFormat from(String value) {
         if (value == null || value.isBlank()) {
-            return MARKDOWN;
+            return DOCX;
         }
         for (DocumentOutputFormat format : values()) {
             if (format.code.equalsIgnoreCase(value.trim())) {

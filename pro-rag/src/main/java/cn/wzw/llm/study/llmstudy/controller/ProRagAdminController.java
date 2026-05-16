@@ -1,6 +1,7 @@
 package cn.wzw.llm.study.llmstudy.controller;
 
 import cn.wzw.llm.study.llmstudy.service.ProRagElasticSearchService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -14,6 +15,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/pro-rag/admin")
+@Slf4j
 public class ProRagAdminController {
 
     @Autowired
@@ -24,6 +26,7 @@ public class ProRagAdminController {
      */
     @PostMapping("/reindex-mapping")
     public Map<String, Object> reindexMapping() {
+        log.warn("[Admin] 执行 reindex-mapping 操作");
         proRagElasticSearchService.ensureMetadataMapping();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "ok");
@@ -36,6 +39,7 @@ public class ProRagAdminController {
      */
     @PostMapping("/recreate-index")
     public Map<String, Object> recreateIndex() throws Exception {
+        log.warn("[Admin] ⚠️ 执行 recreate-index 操作（将清空数据）");
         proRagElasticSearchService.recreateIndex();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "ok");

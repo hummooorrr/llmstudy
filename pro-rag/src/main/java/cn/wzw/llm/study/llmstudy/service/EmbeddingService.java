@@ -54,16 +54,39 @@ public class EmbeddingService {
      * 存储向量库（分批写入，带重试）
      */
     public void embedAndStore(List<Document> documents) {
-        int totalBatches = (documents.size() + BATCH_SIZE - 1) / BATCH_SIZE;
-        for (int i = 0; i < documents.size(); i += BATCH_SIZE) {
+        // 过滤空文本文档：ZhiPu embedding API 对数组中的空字符串/null 元素返回 error 1210
+        List<Document> validDocuments = documents.stream()
+                .filter(doc -> doc.getText() != null && !doc.getText().isBlank())
+                .toList();
+        if (validDocuments.isEmpty()) {
+            log.warn("所有文档文本为空，跳过嵌入入库");
+            return;
+        }
+        if (validDocuments.size() < documents.size()) {
+            log.warn("过滤掉 {} 个空文本文档（共 {} 个）",
+                    documents.size() - validDocuments.size(), documents.size());
+        }
+        int totalBatches = (validDocuments.size() + BATCH_SIZE - 1) / BATCH_SIZE;
+        log.info("[嵌入] 开始: 有效文档={}, 总批次={}", validDocuments.size(), totalBatches);
+        for (int i = 0; i < validDocuments.size(); i += BATCH_SIZE) {
             int batchIndex = i / BATCH_SIZE + 1;
-            List<Document> batch = new ArrayList<>(documents.subList(i, Math.min(i + BATCH_SIZE, documents.size())));
+            List<Document> batch = new ArrayList<>(validDocuments.subList(i, Math.min(i + BATCH_SIZE, validDocuments.size())));
+            // 记录本批每个文档文本长度，便于排查空/超长文本
+            log.debug("[嵌入] 第 {}/{} 批: 文档数={}, 文本长度范围=[{}-{}]",
+                    batchIndex, totalBatches, batch.size(),
+                    batch.stream().mapToInt(d -> d.getText().length()).min().orElse(0),
+                    batch.stream().mapToInt(d -> d.getText().length()).max().orElse(0));
+            long batchStart = System.currentTimeMillis();
             for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                 try {
                     vectorStore.add(batch);
+                    log.info("[嵌入] 第 {}/{} 批完成: 文档数={}, 耗时={}ms",
+                            batchIndex, totalBatches, batch.size(), System.currentTimeMillis() - batchStart);
                     break;
                 } catch (Exception e) {
-                    log.warn("嵌入第 {}/{} 批失败（尝试 {}/{}）: {}", batchIndex, totalBatches, attempt, MAX_RETRIES, e.getMessage());
+                    log.warn("[嵌入] 第 {}/{} 批失败（尝试 {}/{}）: 耗时={}ms, 错误={}",
+                            batchIndex, totalBatches, attempt, MAX_RETRIES,
+                            System.currentTimeMillis() - batchStart, e.getMessage());
                     if (attempt == MAX_RETRIES) {
                         throw new RuntimeException("嵌入失败，已重试" + MAX_RETRIES + "次", e);
                     }

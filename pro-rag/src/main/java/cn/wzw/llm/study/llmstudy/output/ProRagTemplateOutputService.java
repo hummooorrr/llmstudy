@@ -36,6 +36,7 @@ public class ProRagTemplateOutputService {
 
     private final Configuration freemarkerConfig;
     private final ResourceLoader resourceLoader;
+    private final MarkdownToDocxRenderer markdownRenderer = new MarkdownToDocxRenderer();
 
     public ProRagTemplateOutputService(ResourceLoader resourceLoader) {
         this.resourceLoader = resourceLoader;
@@ -139,30 +140,7 @@ public class ProRagTemplateOutputService {
             document.createParagraph();
             return;
         }
-
-        String[] lines = content.replace("\r\n", "\n").split("\n", -1);
-        for (String rawLine : lines) {
-            String line = rawLine == null ? "" : rawLine.trim();
-            if (line.isEmpty()) {
-                document.createParagraph();
-                continue;
-            }
-
-            if (line.startsWith("# ")) {
-                addStyledParagraph(document, line.substring(2).trim(), 16, true, ParagraphAlignment.LEFT);
-                continue;
-            }
-            if (line.startsWith("## ")) {
-                addStyledParagraph(document, line.substring(3).trim(), 14, true, ParagraphAlignment.LEFT);
-                continue;
-            }
-
-            XWPFParagraph paragraph = document.createParagraph();
-            XWPFRun run = paragraph.createRun();
-            run.setBold(bold);
-            run.setFontSize(11);
-            run.setText(line.startsWith("- ") ? "• " + line.substring(2).trim() : line);
-        }
+        markdownRenderer.render(document, content);
     }
 
     /**

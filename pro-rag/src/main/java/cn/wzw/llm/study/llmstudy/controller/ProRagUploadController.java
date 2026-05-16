@@ -2,6 +2,7 @@ package cn.wzw.llm.study.llmstudy.controller;
 
 import cn.wzw.llm.study.llmstudy.dto.ingestion.UploadedDocumentResult;
 import cn.wzw.llm.study.llmstudy.service.ProRagDocumentIngestionService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,6 +14,7 @@ import org.springframework.web.multipart.MultipartFile;
  * 文件上传入库接口
  * 接收 MultipartFile → 保存本地 → 分片 → 写入 PgVector + ES
  */
+@Slf4j
 @RestController
 @RequestMapping("/pro-rag")
 public class ProRagUploadController {
@@ -32,7 +34,19 @@ public class ProRagUploadController {
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "profile", required = false) String profile
     ) throws Exception {
-        return proRagDocumentIngestionService.upload(file, profile);
+        log.info("[上传] 收到上传请求: 文件名={}, 大小={}KB, profile={}",
+                file.getOriginalFilename(), file.getSize() / 1024, profile);
+        long start = System.currentTimeMillis();
+        try {
+            UploadedDocumentResult result = proRagDocumentIngestionService.upload(file, profile);
+            log.info("[上传] 完成: 文件={}, chunk数={}, 耗时={}ms",
+                    result.originalFilename(), result.chunks(), System.currentTimeMillis() - start);
+            return result;
+        } catch (Exception e) {
+            log.error("[上传] 失败: 文件={}, 耗时={}ms, 错误={}",
+                    file.getOriginalFilename(), System.currentTimeMillis() - start, e.getMessage(), e);
+            throw e;
+        }
     }
 
     /**
@@ -47,6 +61,17 @@ public class ProRagUploadController {
             @RequestParam("filename") String filename,
             @RequestParam(value = "profile", required = false) String profile
     ) throws Exception {
-        return proRagDocumentIngestionService.reingest(filename, profile);
+        log.info("[补录] 收到补录请求: 文件名={}, profile={}", filename, profile);
+        long start = System.currentTimeMillis();
+        try {
+            UploadedDocumentResult result = proRagDocumentIngestionService.reingest(filename, profile);
+            log.info("[补录] 完成: 文件={}, chunk数={}, 耗时={}ms",
+                    result.originalFilename(), result.chunks(), System.currentTimeMillis() - start);
+            return result;
+        } catch (Exception e) {
+            log.error("[补录] 失败: 文件={}, 耗时={}ms, 错误={}",
+                    filename, System.currentTimeMillis() - start, e.getMessage(), e);
+            throw e;
+        }
     }
 }

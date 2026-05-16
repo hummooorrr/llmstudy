@@ -7,6 +7,7 @@ import cn.wzw.llm.study.llmstudy.memory.ConversationMetaService;
 import cn.wzw.llm.study.llmstudy.memory.ConversationScope;
 import cn.wzw.llm.study.llmstudy.service.ProRagRetrievalService;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +30,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/pro-rag")
+@Slf4j
 public class ProRagChatController {
 
     @Autowired
@@ -53,11 +55,14 @@ public class ProRagChatController {
             @RequestParam(value = "domain", defaultValue = "bank_risk") String domain,
             HttpServletResponse response
     ) throws Exception {
+        log.info("[Chat] 请求开始: chatId={}, domain={}, messageLength={}", chatId, domain, message.length());
         response.setCharacterEncoding("UTF-8");
         String normalizedChatId = support.normalizeChatId(chatId, "chat-");
         conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message);
         GenerationReferenceBundle bundle = proRagRetrievalService.retrieveReferenceBundle(message, null);
+        log.info("[Chat] 检索完成: chatId={}, references={}", normalizedChatId, bundle.referenceMaterials().size());
         String userMessage = support.buildChatUserMessage(domain, message, bundle);
+        log.debug("[Chat] 构建用户消息完成: chatId={}, promptLength={}", normalizedChatId, userMessage.length());
 
         ChatClient chatChatClient = proRagConfiguration.getChatChatClient();
         return chatChatClient.prompt()
@@ -65,7 +70,10 @@ public class ProRagChatController {
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, normalizedChatId))
                 .stream()
                 .content()
-                .doOnComplete(() -> conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message));
+                .doOnComplete(() -> {
+                    conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message);
+                    log.info("[Chat] 流式输出完成: chatId={}", normalizedChatId);
+                });
     }
 
     /**
@@ -77,17 +85,21 @@ public class ProRagChatController {
             @RequestParam("chatId") String chatId,
             @RequestParam(value = "domain", defaultValue = "bank_risk") String domain
     ) {
+        log.info("[ChatSSE] 请求开始: chatId={}, domain={}, messageLength={}", chatId, domain, message.length());
         String normalizedChatId = support.normalizeChatId(chatId, "chat-");
         conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message);
         GenerationReferenceBundle bundle;
         try {
             bundle = proRagRetrievalService.retrieveReferenceBundle(message, null);
         } catch (Exception e) {
+            log.error("[ChatSSE] 检索失败: chatId={}, error={}", normalizedChatId, e.getMessage(), e);
             return Flux.just(sseEvent("error", Map.of("message", e.getMessage())));
         }
 
         List<ReferenceMaterial> references = bundle.referenceMaterials();
+        log.info("[ChatSSE] 检索完成: chatId={}, references={}", normalizedChatId, references.size());
         String userMessage = support.buildChatUserMessage(domain, message, bundle);
+        log.debug("[ChatSSE] 构建用户消息完成: chatId={}, promptLength={}", normalizedChatId, userMessage.length());
 
         ChatClient chatChatClient = proRagConfiguration.getChatChatClient();
 
@@ -114,6 +126,7 @@ public class ProRagChatController {
             payload.put("usedRefIds", usedRefIds);
             payload.put("totalRefs", references.size());
             payload.put("chatId", normalizedChatId);
+            log.info("[ChatSSE] 完成: chatId={}, usedRefIds={}, totalRefs={}", normalizedChatId, usedRefIds, references.size());
             return sseEvent("done", payload);
         }).flux();
 
