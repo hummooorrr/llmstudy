@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,6 +71,8 @@ public class ProRagChatController {
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, normalizedChatId))
                 .stream()
                 .content()
+                .timeout(Duration.ofSeconds(120))
+                .doOnError(e -> log.error("[Chat] 流式输出失败: chatId={}, error={}", normalizedChatId, e.getMessage(), e))
                 .doOnComplete(() -> {
                     conversationMetaService.touch(normalizedChatId, ConversationScope.CHAT, domain, message);
                     log.info("[Chat] 流式输出完成: chatId={}", normalizedChatId);
@@ -110,9 +113,14 @@ public class ProRagChatController {
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, normalizedChatId))
                 .stream()
                 .content()
+                .timeout(Duration.ofSeconds(120))
                 .map(delta -> {
                     answerBuffer.append(delta);
                     return sseEvent("message", Map.of("delta", delta));
+                })
+                .onErrorResume(e -> {
+                    log.error("[ChatSSE] 流式生成失败: chatId={}, error={}", normalizedChatId, e.getMessage(), e);
+                    return Flux.just(sseEvent("error", Map.of("message", "生成失败: " + e.getMessage())));
                 });
 
         Flux<ServerSentEvent<Object>> referencesFlux = Flux.just(

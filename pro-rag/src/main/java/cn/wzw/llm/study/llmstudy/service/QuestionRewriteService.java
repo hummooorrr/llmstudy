@@ -23,7 +23,7 @@ public class QuestionRewriteService {
 
     public record QueryRouteResult(QueryStrategy strategy, List<String> subQueries, String hypotheticalAnswer) {}
 
-    private static final int MAX_RETRIES = 3;
+    private static final int MAX_RETRIES = 1;
 
     @Value("${pro-rag.rewrite.retry-interval-base:1000}")
     private long retryIntervalBase;
