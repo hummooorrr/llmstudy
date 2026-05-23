@@ -36,7 +36,7 @@ spring:
           dimensions: ${PRO_RAG_EMBEDDING_DIMENSIONS:2048}
     openai:
       api-key: ${DEEPSEEK_API_KEY:${ZHIPU_API_KEY:}}
-      base-url: ${OPENAI_BASE_URL:https://api.deepseek.com}
+      base-url: ${OPENAI_BASE_URL:https://api.xiaomimimo.com}
       embedding:
         enabled: false
       chat:

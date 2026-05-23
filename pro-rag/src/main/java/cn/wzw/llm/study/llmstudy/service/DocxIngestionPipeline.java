@@ -26,6 +26,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 
 /**
  * DOCX 结构化入库流水线。
@@ -228,10 +232,17 @@ public class DocxIngestionPipeline implements DocumentIngestionPipeline {
         return text.replaceAll("\\s+", " ").replace("|", "\\|").trim();
     }
 
+    /**
+     * DOCX 图片抽取：图片落盘同步完成，VL 描述通过虚拟线程 + Semaphore 并发调用。
+     */
     private List<Document> extractImageChunks(XWPFDocument document, File docFile) {
-        List<Document> result = new ArrayList<>();
         int imageBudget = parsingProperties.getMaxImagesPerDoc();
+
+        // Phase 1: 同步收集所有候选图片（提取 + 落盘，不调用 VL）
+        record ImageCandidate(byte[] bytes, String assetPath, MimeType mimeType, int index, int size) {}
+        List<ImageCandidate> candidates = new ArrayList<>();
         int index = 0;
+
         for (XWPFPictureData picture : document.getAllPictures()) {
             if (imageBudget <= 0) {
                 break;
@@ -245,29 +256,51 @@ public class DocxIngestionPipeline implements DocumentIngestionPipeline {
                 String extension = "." + (picture.suggestFileExtension() == null ? "png"
                         : picture.suggestFileExtension().toLowerCase());
                 String assetPath = assetStorageService.saveImage(docFile.getAbsolutePath(), extension, bytes);
-
-                String description;
-                try {
-                    MimeType mimeType = extension.endsWith(".jpg") || extension.endsWith(".jpeg") ? JPEG : PNG;
-                    description = visionModelService.describeImage(bytes, mimeType, parsingProperties.getImagePrompt());
-                } catch (Exception e) {
-                    log.warn("DOCX 图片 VL 描述失败（#{}）: {}", index, e.getMessage());
-                    description = "[嵌入图片，大小 " + bytes.length + " bytes]";
-                }
-
-                Map<String, Object> metadata = baseMetadata(docFile);
-                metadata.put(ChunkMetadataKeys.CHUNK_TYPE, ChunkType.IMAGE.name());
-                metadata.put(ChunkMetadataKeys.ASSET_PATH, assetPath);
-                metadata.put(ChunkMetadataKeys.ASSET_DESCRIPTION, description);
-                metadata.put(ChunkMetadataKeys.CHUNK_PROFILE, "docx-image");
-                metadata.put("imageIndex", index);
-                result.add(new Document("[图片描述] " + description, metadata));
+                MimeType mimeType = extension.endsWith(".jpg") || extension.endsWith(".jpeg") ? JPEG : PNG;
+                candidates.add(new ImageCandidate(bytes, assetPath, mimeType, index, bytes.length));
                 imageBudget--;
             } catch (Exception e) {
                 log.warn("DOCX 第 {} 张图片抽取失败: {}", index, e.getMessage());
             }
         }
-        return result;
+
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        // Phase 2: VL 描述并发
+        int maxConcurrency = Math.max(1, parsingProperties.getVisionMaxConcurrency());
+        Semaphore semaphore = new Semaphore(maxConcurrency);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<CompletableFuture<Document>> futures = new ArrayList<>();
+            for (ImageCandidate c : candidates) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    String description;
+                    try {
+                        semaphore.acquire();
+                        try {
+                            description = visionModelService.describeImage(
+                                    c.bytes(), c.mimeType(), parsingProperties.getImagePrompt());
+                        } finally {
+                            semaphore.release();
+                        }
+                    } catch (Exception e) {
+                        log.warn("DOCX 图片 VL 描述失败（#{}）: {}", c.index(), e.getMessage());
+                        description = "[嵌入图片，大小 " + c.size() + " bytes]";
+                    }
+                    Map<String, Object> metadata = baseMetadata(docFile);
+                    metadata.put(ChunkMetadataKeys.CHUNK_TYPE, ChunkType.IMAGE.name());
+                    metadata.put(ChunkMetadataKeys.ASSET_PATH, c.assetPath());
+                    metadata.put(ChunkMetadataKeys.ASSET_DESCRIPTION, description);
+                    metadata.put(ChunkMetadataKeys.CHUNK_PROFILE, "docx-image");
+                    metadata.put("imageIndex", c.index());
+                    return new Document("[图片描述] " + description, metadata);
+                }, executor));
+            }
+            return futures.stream()
+                    .map(CompletableFuture::join)
+                    .toList();
+        }
     }
 
     private Map<String, Object> baseMetadata(File file) {

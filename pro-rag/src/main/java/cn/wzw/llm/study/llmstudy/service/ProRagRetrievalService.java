@@ -19,6 +19,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Callable;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -82,9 +87,16 @@ public class ProRagRetrievalService {
         log.debug("[Locate] 查询构建完成: vectorQueries={}, keywordQueries={}",
                 bundle.vectorQueries().size(), bundle.keywordQueries().size());
         RetrievalProperties.Locate locateCfg = retrievalProperties.getLocate();
-        List<SearchHit> vectorHits = searchVectorHits(bundle.vectorQueries(), null,
-                locateCfg.getVectorTopK(), locateCfg.getSimilarityThreshold());
-        List<SearchHit> keywordHits = searchKeywordHits(bundle.keywordQueries(), locateCfg.getKeywordTopK());
+
+        // 向量检索与关键词检索并行执行
+        CompletableFuture<List<SearchHit>> vectorHitsFuture = submitSearch(() ->
+                searchVectorHits(bundle.vectorQueries(), null,
+                        locateCfg.getVectorTopK(), locateCfg.getSimilarityThreshold()));
+        CompletableFuture<List<SearchHit>> keywordHitsFuture = submitSearch(() ->
+                searchKeywordHits(bundle.keywordQueries(), locateCfg.getKeywordTopK()));
+
+        List<SearchHit> vectorHits = joinUnwrap(vectorHitsFuture);
+        List<SearchHit> keywordHits = joinUnwrap(keywordHitsFuture);
 
         Map<String, FileLocateAccumulator> groupedFiles = new LinkedHashMap<>();
         vectorHits.forEach(hit -> groupedFiles
@@ -138,14 +150,27 @@ public class ProRagRetrievalService {
         return bundle;
     }
 
+    /**
+     * 并发查询线程池：使用虚拟线程，适合 I/O 密集型的检索和 VL 调用。
+     * 所有检索并行化都复用此线程池，避免频繁创建销毁。
+     */
+    private final ExecutorService searchExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
     private GenerationReferenceBundle doRetrieveReferenceBundle(String query, String directiveFilename, int finalTopK) throws Exception {
         QueryBundle bundle = buildQueries(query);
         log.debug("[Retrieval] 查询构建完成: vectorQueries={}, keywordQueries={}",
                 bundle.vectorQueries().size(), bundle.keywordQueries().size());
-        List<Document> vectorDocs = searchVector(bundle.vectorQueries(), null,
-                retrievalProperties.getVectorTopK(), retrievalProperties.getSimilarityThreshold());
-        List<EsDocumentChunk> keywordDocs = searchKeyword(bundle.keywordQueries(), retrievalProperties.getKeywordTopK());
-        log.info("[Retrieval] 初始检索完成: vectorDocs={}, keywordDocs={}", vectorDocs.size(), keywordDocs.size());
+
+        // 向量检索与关键词检索并行执行（Java 21 虚拟线程，I/O 密集型不占平台线程）
+        CompletableFuture<List<Document>> vectorFuture = submitSearch(() ->
+                searchVector(bundle.vectorQueries(), null,
+                        retrievalProperties.getVectorTopK(), retrievalProperties.getSimilarityThreshold()));
+        CompletableFuture<List<EsDocumentChunk>> keywordFuture = submitSearch(() ->
+                searchKeyword(bundle.keywordQueries(), retrievalProperties.getKeywordTopK()));
+
+        List<Document> vectorDocs = joinUnwrap(vectorFuture);
+        List<EsDocumentChunk> keywordDocs = joinUnwrap(keywordFuture);
+        log.info("[Retrieval] 初始检索完成（并行）: vectorDocs={}, keywordDocs={}", vectorDocs.size(), keywordDocs.size());
 
         if (StringUtils.hasText(directiveFilename)) {
             log.debug("[Retrieval] 追加通知文件检索: directiveFilename={}", directiveFilename);
@@ -164,14 +189,17 @@ public class ProRagRetrievalService {
                 vectorDocs, keywordDocs, bundle.originalQuery(), finalTopK);
         log.info("[Retrieval] 融合重排完成: fusedChunks={}, finalTopK={}", fused.size(), finalTopK);
 
+        // 批量预取父 chunk，消除 N+1 查询（原先每个 chunk 单独 findById 一次）
+        Map<String, EsDocumentChunk> parentChunkCache = preFetchParentChunks(fused);
+
         List<String> contents = new ArrayList<>(fused.size());
         List<ReferenceMaterial> referenceMaterials = new ArrayList<>(fused.size());
         int refIdx = 1;
         for (ProRagRerankUtil.FusedChunk chunk : fused) {
             String content = chunk.text();
-            // Small-to-Big: 如果有父 chunk，附加上下文
+            // Small-to-Big: 如果有父 chunk，附加上下文（从预取缓存中读取，无需额外 ES 请求）
             if (parentContextEnabled) {
-                content = enrichWithParentContext(chunk, content);
+                content = enrichWithParentContext(chunk, content, parentChunkCache);
             }
             contents.add(content);
             referenceMaterials.add(buildReferenceMaterial(chunk, refIdx, bundle.originalQuery()));
@@ -183,10 +211,45 @@ public class ProRagRetrievalService {
     }
 
     /**
-     * Small-to-Big 检索：如果 chunk 有父 chunkId，从 ES 查父 chunk 全文做附加上下文。
+     * 批量预取父 chunk：一次 ES mget 取回所有需要的父块，消除 N+1 查询。
+     */
+    private Map<String, EsDocumentChunk> preFetchParentChunks(List<ProRagRerankUtil.FusedChunk> fused) {
+        if (!parentContextEnabled) {
+            return Map.of();
+        }
+        List<String> parentIds = new ArrayList<>();
+        for (ProRagRerankUtil.FusedChunk chunk : fused) {
+            if (chunk.text() != null && chunk.text().length() >= parentContextChildMaxChars) {
+                continue;
+            }
+            Map<String, Object> metadata = chunk.metadata();
+            if (metadata == null) {
+                continue;
+            }
+            Object parentId = metadata.get(ChunkMetadataKeys.PARENT_CHUNK_ID);
+            if (parentId != null && StringUtils.hasText(parentId.toString())) {
+                parentIds.add(parentId.toString());
+            }
+        }
+        if (parentIds.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            Map<String, EsDocumentChunk> result = proRagElasticSearchService.findByIds(parentIds);
+            log.debug("[ParentContext] 批量预取父 chunk: requested={}, found={}", parentIds.size(), result.size());
+            return result;
+        } catch (Exception e) {
+            log.warn("批量预取父 chunk 失败，降级跳过上下文扩展: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    /**
+     * Small-to-Big 检索：从预取缓存中查父 chunk 全文做附加上下文。
      * 仅在子 chunk 足够短时才附加，且父文本会做长度截断，避免 prompt 体积失控。
      */
-    private String enrichWithParentContext(ProRagRerankUtil.FusedChunk chunk, String originalText) {
+    private String enrichWithParentContext(ProRagRerankUtil.FusedChunk chunk, String originalText,
+                                           Map<String, EsDocumentChunk> parentChunkCache) {
         Map<String, Object> metadata = chunk.metadata();
         if (metadata == null) {
             return originalText;
@@ -199,22 +262,18 @@ public class ProRagRetrievalService {
         if (parentId == null || !StringUtils.hasText(parentId.toString())) {
             return originalText;
         }
-        try {
-            Optional<EsDocumentChunk> parentChunk = proRagElasticSearchService.findById(parentId.toString());
-            if (parentChunk.isPresent() && StringUtils.hasText(parentChunk.get().getContent())) {
-                String parentText = parentChunk.get().getContent().trim();
-                if (parentText.isEmpty() || originalText.contains(parentText)) {
-                    return originalText;
-                }
-                String truncated = parentText.length() > parentContextMaxChars
-                        ? parentText.substring(0, parentContextMaxChars) + "…"
-                        : parentText;
-                return originalText + "\n\n[上下文] " + truncated;
-            }
-        } catch (Exception e) {
-            log.debug("查询父 chunk 失败 docId={} parentId={}: {}", chunk.docId(), parentId, e.getMessage());
+        EsDocumentChunk parentChunk = parentChunkCache.get(parentId.toString());
+        if (parentChunk == null || !StringUtils.hasText(parentChunk.getContent())) {
+            return originalText;
         }
-        return originalText;
+        String parentText = parentChunk.getContent().trim();
+        if (parentText.isEmpty() || originalText.contains(parentText)) {
+            return originalText;
+        }
+        String truncated = parentText.length() > parentContextMaxChars
+                ? parentText.substring(0, parentContextMaxChars) + "…"
+                : parentText;
+        return originalText + "\n\n[上下文] " + truncated;
     }
 
     private ReferenceMaterial buildReferenceMaterial(ProRagRerankUtil.FusedChunk chunk, int refIdx, String originalQuery) {
@@ -489,6 +548,33 @@ public class ProRagRetrievalService {
             throw new IllegalArgumentException("不合法的文件名过滤值: " + value);
         }
         return value.replace("\\", "\\\\").replace("'", "\\'");
+    }
+
+    /**
+     * 提交一个受检异常友好的异步任务到虚拟线程池。
+     */
+    private <T> CompletableFuture<T> submitSearch(Callable<T> task) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return task.call();
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            }
+        }, searchExecutor);
+    }
+
+    /**
+     * join CompletableFuture 并解包 CompletionException，还原原始受检异常。
+     */
+    private <T> T joinUnwrap(CompletableFuture<T> future) throws Exception {
+        try {
+            return future.join();
+        } catch (CompletionException e) {
+            if (e.getCause() instanceof Exception ex) {
+                throw ex;
+            }
+            throw e;
+        }
     }
 
     private record SearchHit(

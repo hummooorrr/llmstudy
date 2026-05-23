@@ -29,6 +29,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 
 import cn.wzw.llm.study.llmstudy.service.DocumentIngestionPipeline;
 import org.springframework.core.annotation.Order;
@@ -67,6 +71,7 @@ public class PdfIngestionPipeline implements DocumentIngestionPipeline {
 
     /**
      * 对一份 PDF 生成所有类型的 chunk（text / table / image）。
+     * 表格和图片的 VL 调用通过虚拟线程 + Semaphore 并发执行，大幅缩短入库耗时。
      */
     @Override
     public List<Document> process(File pdfFile, String textProfile) throws Exception {
@@ -74,33 +79,70 @@ public class PdfIngestionPipeline implements DocumentIngestionPipeline {
             int pageCount = document.getNumberOfPages();
             PDFRenderer renderer = new PDFRenderer(document);
 
-            List<Document> textChunks = extractTextChunks(document, pdfFile, textProfile);
+            // Step 1: 文本抽取（CPU bound，同步完成），同时收集每页原文供表格检测复用
+            Map<Integer, String> pageTexts = new LinkedHashMap<>();
+            List<Document> textChunks = extractTextChunks(document, pdfFile, textProfile, pageTexts);
             boolean structured = parsingProperties.isStructuredEnabled();
-
-            List<Document> tableChunks = new ArrayList<>();
-            List<Document> imageChunks = new ArrayList<>();
-
-            if (structured && !textChunks.isEmpty()) {
-                tableChunks.addAll(extractTableChunks(document, renderer, pdfFile));
-                imageChunks.addAll(extractImageChunks(document, pdfFile));
-            }
 
             if (textChunks.isEmpty()) {
                 // 扫描件：整页 VL（带 TABLE 标记）
                 return scannedPdfPipeline(document, renderer, pdfFile, pageCount);
             }
 
-            List<Document> all = new ArrayList<>(textChunks);
-            all.addAll(tableChunks);
-            all.addAll(imageChunks);
-            return all;
+            if (!structured) {
+                return new ArrayList<>(textChunks);
+            }
+
+            // Step 2: 表格抽取 + 图片抽取并行（都是 VL 调用，I/O bound）
+            int maxConcurrency = Math.max(1, parsingProperties.getVisionMaxConcurrency());
+            Semaphore visionSemaphore = new Semaphore(maxConcurrency);
+            try (ExecutorService vlExecutor = Executors.newVirtualThreadPerTaskExecutor()) {
+
+                CompletableFuture<List<Document>> tableFuture = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        visionSemaphore.acquire();
+                        try {
+                            return extractTableChunks(document, renderer, pdfFile, pageTexts);
+                        } finally {
+                            visionSemaphore.release();
+                        }
+                    } catch (Exception e) {
+                        log.warn("PDF 表格并发抽取失败: {}", e.getMessage());
+                        return List.of();
+                    }
+                }, vlExecutor);
+
+                CompletableFuture<List<Document>> imageFuture = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        visionSemaphore.acquire();
+                        try {
+                            return extractImageChunks(document, pdfFile);
+                        } finally {
+                            visionSemaphore.release();
+                        }
+                    } catch (Exception e) {
+                        log.warn("PDF 图片并发抽取失败: {}", e.getMessage());
+                        return List.of();
+                    }
+                }, vlExecutor);
+
+                List<Document> tableChunks = tableFuture.get();
+                List<Document> imageChunks = imageFuture.get();
+
+                List<Document> all = new ArrayList<>(textChunks);
+                all.addAll(tableChunks);
+                all.addAll(imageChunks);
+                return all;
+            }
         }
     }
 
     /**
-     * 文本抽取：逐页 PDFBox 抽文本 → SplitterFactory(profile) → text chunks（带 pageNumber）
+     * 文本抽取：逐页 PDFBox 抽文本 → SplitterFactory(profile) → text chunks（带 pageNumber）。
+     * 同时将每页原文收集到 {@code pageTexts} 供表格检测复用，避免重复调用 PDFTextStripper。
      */
-    private List<Document> extractTextChunks(PDDocument document, File pdfFile, String profile) throws Exception {
+    private List<Document> extractTextChunks(PDDocument document, File pdfFile, String profile,
+                                             Map<Integer, String> pageTexts) throws Exception {
         int pageCount = document.getNumberOfPages();
         List<Document> perPageDocs = new ArrayList<>();
         PDFTextStripper stripper = new PDFTextStripper();
@@ -109,6 +151,7 @@ public class PdfIngestionPipeline implements DocumentIngestionPipeline {
             stripper.setStartPage(i);
             stripper.setEndPage(i);
             String pageText = stripper.getText(document);
+            pageTexts.put(i, pageText);
             if (!StringUtils.hasText(pageText)) {
                 continue;
             }
@@ -130,56 +173,90 @@ public class PdfIngestionPipeline implements DocumentIngestionPipeline {
     }
 
     /**
-     * 表格抽取：启发式识别可能含表格的页 → 渲染 → VL 产出 Markdown 表格 → 按 &lt;!--TABLE--&gt; 标记切出 table chunk。
+     * 表格抽取：复用已抽取的页面文本做启发式判断 → 渲染候选页 → VL 产出 Markdown 表格 → table chunk。
+     * 候选页的 VL 调用通过虚拟线程 + Semaphore 并发执行。
      */
-    private List<Document> extractTableChunks(PDDocument document, PDFRenderer renderer, File pdfFile) {
+    private List<Document> extractTableChunks(PDDocument document, PDFRenderer renderer,
+                                              File pdfFile, Map<Integer, String> pageTexts) {
         int pageCount = document.getNumberOfPages();
-        List<Document> result = new ArrayList<>();
-        PDFTextStripper stripper = new PDFTextStripper();
-        try {
-            stripper.setSortByPosition(true);
-        } catch (Exception ignored) {
-        }
+
+        // 复用已有 pageTexts 筛选候选页，不再重复调用 PDFTextStripper
+        List<Integer> candidatePages = new ArrayList<>();
         for (int i = 1; i <= pageCount; i++) {
-            try {
-                stripper.setStartPage(i);
-                stripper.setEndPage(i);
-                String pageText = stripper.getText(document);
-                if (!looksLikeTablePage(pageText)) {
-                    continue;
-                }
-                BufferedImage image = renderer.renderImageWithDPI(i - 1, SCAN_DPI);
-                byte[] pngBytes = toPng(image);
-                String prompt = "请识别这页 PDF 中的所有表格。对每一张表格，严格输出为 Markdown 表格，并用 <!--TABLE--> 和 <!--/TABLE--> 包裹。"
-                        + "只输出表格，忽略其他正文。如果没有表格，只回复 NO_TABLE。";
-                String vlOutput = visionModelService.describeImage(pngBytes, PNG, prompt);
-                if (!StringUtils.hasText(vlOutput) || vlOutput.contains("NO_TABLE")) {
-                    continue;
-                }
-                for (String tableMarkdown : splitTableBlocks(vlOutput)) {
-                    if (!StringUtils.hasText(tableMarkdown)) {
-                        continue;
-                    }
-                    Map<String, Object> metadata = baseMetadata(pdfFile);
-                    metadata.put(ChunkMetadataKeys.PAGE_NUMBER, i);
-                    metadata.put(ChunkMetadataKeys.CHUNK_TYPE, ChunkType.TABLE.name());
-                    metadata.put(ChunkMetadataKeys.CHUNK_PROFILE, "pdf-table");
-                    result.add(new Document(tableMarkdown.trim(), metadata));
-                }
-            } catch (Exception e) {
-                log.warn("PDF 第 {} 页表格抽取失败: {}", i, e.getMessage());
+            String pageText = pageTexts.get(i);
+            if (looksLikeTablePage(pageText)) {
+                candidatePages.add(i);
             }
+        }
+        if (candidatePages.isEmpty()) {
+            return List.of();
+        }
+
+        // VL 并发抽取表格
+        int maxConcurrency = Math.max(1, parsingProperties.getVisionMaxConcurrency());
+        Semaphore semaphore = new Semaphore(maxConcurrency);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<CompletableFuture<List<Document>>> futures = new ArrayList<>();
+            for (int pageNum : candidatePages) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    try {
+                        semaphore.acquire();
+                        try {
+                            return extractTablesFromPage(renderer, pageNum, pdfFile);
+                        } finally {
+                            semaphore.release();
+                        }
+                    } catch (Exception e) {
+                        log.warn("PDF 第 {} 页表格抽取失败: {}", pageNum, e.getMessage());
+                        return List.<Document>of();
+                    }
+                }, executor));
+            }
+            return futures.stream()
+                    .map(CompletableFuture::join)
+                    .flatMap(List::stream)
+                    .toList();
+        }
+    }
+
+    /**
+     * 单页表格 VL 识别：渲染页面图片 → 调 VL → 解析 <!--TABLE--> 块。
+     */
+    private List<Document> extractTablesFromPage(PDFRenderer renderer, int pageNum, File pdfFile) throws Exception {
+        BufferedImage image = renderer.renderImageWithDPI(pageNum - 1, SCAN_DPI);
+        byte[] pngBytes = toPng(image);
+        String prompt = "请识别这页 PDF 中的所有表格。对每一张表格，严格输出为 Markdown 表格，并用 <!--TABLE--> 和 <!--/TABLE--> 包裹。"
+                + "只输出表格，忽略其他正文。如果没有表格，只回复 NO_TABLE。";
+        String vlOutput = visionModelService.describeImage(pngBytes, PNG, prompt);
+        if (!StringUtils.hasText(vlOutput) || vlOutput.contains("NO_TABLE")) {
+            return List.of();
+        }
+        List<Document> result = new ArrayList<>();
+        for (String tableMarkdown : splitTableBlocks(vlOutput)) {
+            if (!StringUtils.hasText(tableMarkdown)) {
+                continue;
+            }
+            Map<String, Object> metadata = baseMetadata(pdfFile);
+            metadata.put(ChunkMetadataKeys.PAGE_NUMBER, pageNum);
+            metadata.put(ChunkMetadataKeys.CHUNK_TYPE, ChunkType.TABLE.name());
+            metadata.put(ChunkMetadataKeys.CHUNK_PROFILE, "pdf-table");
+            result.add(new Document(tableMarkdown.trim(), metadata));
         }
         return result;
     }
 
     /**
-     * 内嵌图片抽取：遍历每页 XObject，命中 PDImageXObject → 存盘 + VL 描述
+     * 内嵌图片抽取：遍历每页 XObject，命中 PDImageXObject → 存盘 + VL 描述。
+     * 图片落盘同步完成，VL 描述通过虚拟线程 + Semaphore 并发调用。
      */
     private List<Document> extractImageChunks(PDDocument document, File pdfFile) {
         int pageCount = document.getNumberOfPages();
-        List<Document> result = new ArrayList<>();
         int imageBudget = parsingProperties.getMaxImagesPerDoc();
+
+        // Phase 1: 同步收集所有候选图片（从 PDF 中提取 + 落盘，不调用 VL）
+        record ImageCandidate(byte[] pngBytes, String assetPath, int width, int height, int pageNumber) {}
+        List<ImageCandidate> candidates = new ArrayList<>();
+
         for (int i = 1; i <= pageCount && imageBudget > 0; i++) {
             PDPage page = document.getPage(i - 1);
             PDResources resources = page.getResources();
@@ -202,29 +279,51 @@ public class PdfIngestionPipeline implements DocumentIngestionPipeline {
                     BufferedImage bi = image.getImage();
                     byte[] bytes = toPng(bi);
                     String assetPath = assetStorageService.saveImage(pdfFile.getAbsolutePath(), ".png", bytes);
-
-                    String description;
-                    try {
-                        description = visionModelService.describeImage(bytes, PNG, parsingProperties.getImagePrompt());
-                    } catch (Exception e) {
-                        log.warn("图片 VL 描述失败（页 {}）: {}", i, e.getMessage());
-                        description = "[图片，尺寸 " + image.getWidth() + "x" + image.getHeight() + "]";
-                    }
-
-                    Map<String, Object> metadata = baseMetadata(pdfFile);
-                    metadata.put(ChunkMetadataKeys.PAGE_NUMBER, i);
-                    metadata.put(ChunkMetadataKeys.CHUNK_TYPE, ChunkType.IMAGE.name());
-                    metadata.put(ChunkMetadataKeys.ASSET_PATH, assetPath);
-                    metadata.put(ChunkMetadataKeys.ASSET_DESCRIPTION, description);
-                    metadata.put(ChunkMetadataKeys.CHUNK_PROFILE, "pdf-image");
-                    result.add(new Document("[图片描述] " + description, metadata));
+                    candidates.add(new ImageCandidate(bytes, assetPath, image.getWidth(), image.getHeight(), i));
                     imageBudget--;
                 } catch (Exception e) {
                     log.warn("PDF 第 {} 页图片抽取失败: {}", i, e.getMessage());
                 }
             }
         }
-        return result;
+
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        // Phase 2: VL 描述并发
+        int maxConcurrency = Math.max(1, parsingProperties.getVisionMaxConcurrency());
+        Semaphore semaphore = new Semaphore(maxConcurrency);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<CompletableFuture<Document>> futures = new ArrayList<>();
+            for (ImageCandidate c : candidates) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    String description;
+                    try {
+                        semaphore.acquire();
+                        try {
+                            description = visionModelService.describeImage(
+                                    c.pngBytes(), PNG, parsingProperties.getImagePrompt());
+                        } finally {
+                            semaphore.release();
+                        }
+                    } catch (Exception e) {
+                        log.warn("图片 VL 描述失败（页 {}）: {}", c.pageNumber(), e.getMessage());
+                        description = "[图片，尺寸 " + c.width() + "x" + c.height() + "]";
+                    }
+                    Map<String, Object> metadata = baseMetadata(pdfFile);
+                    metadata.put(ChunkMetadataKeys.PAGE_NUMBER, c.pageNumber());
+                    metadata.put(ChunkMetadataKeys.CHUNK_TYPE, ChunkType.IMAGE.name());
+                    metadata.put(ChunkMetadataKeys.ASSET_PATH, c.assetPath());
+                    metadata.put(ChunkMetadataKeys.ASSET_DESCRIPTION, description);
+                    metadata.put(ChunkMetadataKeys.CHUNK_PROFILE, "pdf-image");
+                    return new Document("[图片描述] " + description, metadata);
+                }, executor));
+            }
+            return futures.stream()
+                    .map(CompletableFuture::join)
+                    .toList();
+        }
     }
 
     /**

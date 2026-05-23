@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -319,6 +320,32 @@ public class ProRagElasticSearchService {
             chunk.setId(response.id());
         }
         return Optional.of(chunk);
+    }
+
+    /**
+     * 批量按 _id 查询 chunk，用于 Parent Context 等需要一次取回多条记录的场景，
+     * 避免逐条 findById 产生 N+1 查询。
+     */
+    public Map<String, EsDocumentChunk> findByIds(List<String> ids) throws Exception {
+        if (!clientAvailable() || ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        MgetResponse<EsDocumentChunk> response = client.mget(
+                m -> m.index(INDEX_NAME).ids(ids), EsDocumentChunk.class);
+        Map<String, EsDocumentChunk> result = new LinkedHashMap<>();
+        for (var item : response.docs()) {
+            if (item.isResult()) {
+                var getResult = item.result();
+                if (getResult.found() && getResult.source() != null) {
+                    EsDocumentChunk chunk = getResult.source();
+                    if (chunk.getId() == null) {
+                        chunk.setId(getResult.id());
+                    }
+                    result.put(getResult.id(), chunk);
+                }
+            }
+        }
+        return result;
     }
 
     /**

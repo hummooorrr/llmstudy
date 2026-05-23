@@ -96,6 +96,15 @@ public class QuestionRewriteService {
     private static final String QUESTION = "QUESTION";
     private static final String CHAT_HISTORY = "CHAT_HISTORY";
 
+    /** 短查询直接走 DIRECT 的字符数阈值，可通过配置覆盖 */
+    @Value("${pro-rag.rewrite.direct-max-length:40}")
+    private int directMaxLength;
+
+    /** 包含以下关键词时认为可拆分，直接走 DECOMPOSE */
+    private static final String[] DECOMPOSE_CONJUNCTIONS = {
+            "以及", "并且", "同时", "还有", "分别", "各自", "和", "及"
+    };
+
     // 智能路由 prompt：单次 LLM 调用同时完成分类 + 生成
     private static final String ROUTE_PROMPT =
             "# 角色\n"
@@ -195,11 +204,43 @@ public class QuestionRewriteService {
     }
 
     /**
-     * 智能查询路由：单次 LLM 调用完成分类 + 生成
+     * 轻量规则预判：对简单查询跳过 LLM 调用，节省 1~3 秒延迟。
+     * 无法判断时返回 null，由调用方回退到 LLM 路由。
+     */
+    private QueryRouteResult preCheckRoute(String query) {
+        int len = query.length();
+
+        // 1. 包含并列连接词 → DECOMPOSE（直接以原 query 作为唯一子查询，
+        //    向量/关键词多路检索仍会执行，比 DIRECT 多一次检索机会）
+        for (String conjunction : DECOMPOSE_CONJUNCTIONS) {
+            if (query.contains(conjunction)) {
+                log.info("[路由预判] 检测到连接词「{}」→ DECOMPOSE（跳过 LLM）", conjunction);
+                return new QueryRouteResult(QueryStrategy.DECOMPOSE, List.of(query), null);
+            }
+        }
+
+        // 2. 短查询（无连接词）→ DIRECT
+        if (len <= directMaxLength) {
+            log.info("[路由预判] 短查询 len={} ≤ {} → DIRECT（跳过 LLM）", len, directMaxLength);
+            return new QueryRouteResult(QueryStrategy.DIRECT, List.of(query), null);
+        }
+
+        // 3. 无法判断，回退到 LLM
+        return null;
+    }
+
+    /**
+     * 智能查询路由：先做轻量规则预判，无法判断时再调 LLM 完成分类 + 生成
      */
     public QueryRouteResult routeQuery(String query) {
         log.info("===========进入智能查询路由流程===========");
         log.info("原始问题: {}", query);
+
+        // 轻量规则预判：短查询或含连接词的查询直接分类，节省一次 LLM 调用
+        QueryRouteResult preCheck = preCheckRoute(query);
+        if (preCheck != null) {
+            return preCheck;
+        }
 
         PromptTemplate promptTemplate = new PromptTemplate(ROUTE_PROMPT);
         promptTemplate.add(QUESTION, query);
