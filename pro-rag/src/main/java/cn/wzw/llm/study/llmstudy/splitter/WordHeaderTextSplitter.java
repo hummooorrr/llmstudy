@@ -4,7 +4,6 @@ package cn.wzw.llm.study.llmstudy.splitter;
 import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.hwpf.usermodel.Paragraph;
 import org.apache.poi.hwpf.usermodel.Range;
-import org.apache.poi.openxml4j.util.ZipSecureFile;
 import org.apache.poi.poifs.filesystem.FileMagic;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
@@ -165,7 +164,7 @@ public class WordHeaderTextSplitter extends OverlapParagraphTextSplitter {
      * 使用try-with-resources确保XWPFDocument正确关闭
      */
     private List<DocumentWithMetadata> splitDocxDocument(InputStream inputStream, Map<String, Object> baseMetadata) throws Exception {
-        ZipSecureFile.setMaxFileCount(10000);
+        // POI zip-bomb 阈值已在 ProRagApplication 启动时统一设置，这里无需重复设置。
         List<ParagraphWithMetadata> paragraphsWithMetadata = new ArrayList<>();
         try (XWPFDocument document = new XWPFDocument(inputStream)) {
             List<String> currentContent = new ArrayList<>();

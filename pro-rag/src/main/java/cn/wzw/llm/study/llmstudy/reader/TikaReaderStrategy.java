@@ -1,7 +1,6 @@
 package cn.wzw.llm.study.llmstudy.reader;
 
 import org.springframework.ai.document.Document;
-import org.apache.poi.openxml4j.util.ZipSecureFile;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -23,7 +22,7 @@ public class TikaReaderStrategy implements DocumentReaderStrategy {
 
     @Override
     public List<Document> read(File file) throws IOException {
-        ZipSecureFile.setMaxFileCount(10000);
+        // POI zip-bomb 阈值已在 ProRagApplication 启动时统一设置，这里无需重复设置。
         Resource resource = new FileSystemResource(file);
         return new TikaDocumentReader(resource).get();
     }
